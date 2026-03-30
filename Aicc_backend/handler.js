@@ -59,28 +59,17 @@ function authenticateToken(token) {
   }
 }
 
-function connectDeepgram(state, ws) {
-  const key = process.env.DEEPGRAM_API_KEY?.trim();
+function connectAssemblyAI(state, ws) {
+  const key = process.env.ASSEMBLYAI_API_KEY?.trim();
   if (!key) {
     send(ws, MSG.ERROR, {
       message:
-        "Live transcription needs DEEPGRAM_API_KEY in server .env (see console.deepgram.com). Questions still work; scoring triggers after Deepgram detects end of speech.",
+        "Live transcription needs ASSEMBLYAI_API_KEY in server .env (see console.assemblyai.com). Questions still work; scoring triggers after AssemblyAI detects end of speech.",
     });
     return Promise.resolve();
   }
 
-  const dgUrl = [
-    "wss://api.deepgram.com/v1/listen",
-    "?model=nova-2",
-    "&language=en-US",
-    "&encoding=linear16",
-    "&sample_rate=16000",
-    "&channels=1",
-    "&interim_results=true",
-    "&utterance_end_ms=1200",
-    "&vad_events=true",
-    "&smart_format=true",
-  ].join("");
+  const dgUrl = "wss://streaming.assemblyai.com/v3/ws?sample_rate=16000";
 
   return new Promise((resolve) => {
     let settled = false;
@@ -92,11 +81,11 @@ function connectDeepgram(state, ws) {
     };
 
     const dgWs = new WebSocket(dgUrl, {
-      headers: { Authorization: `Token ${key}` },
+      headers: { Authorization: key },
     });
 
     dgWs.on("open", () => {
-      console.log(`[DG] Connected for session ${state.sessionId}`);
+      console.log(`[AssemblyAI] Connected for session ${state.sessionId}`);
       state.isRecording = true;
       done();
     });
@@ -104,48 +93,45 @@ function connectDeepgram(state, ws) {
     dgWs.on("message", async (data) => {
       try {
         const msg = JSON.parse(data.toString());
-        if (msg.type === "Results") {
-          const alt = msg.channel?.alternatives?.[0];
-          if (!alt?.transcript) return;
-          if (msg.is_final) {
-            const finalText = alt.transcript.trim();
-            if (finalText) {
-              state.currentTranscript += " " + finalText;
-              const wordCount = finalText.split(/\s+/).length;
-              const duration = (msg.duration || 5);
-              const wpm = Math.round((wordCount / duration) * 60);
-              const fillers = ["um", "uh", "like", "basically", "you know", "sort of", "right", "literally"];
-              const lowerText = finalText.toLowerCase();
-              for (const f of fillers) {
-                const cnt = (lowerText.match(new RegExp(`\\b${f}\\b`, "g")) || []).length;
-                if (cnt > 0) state.fillerTotals[f] = (state.fillerTotals[f] || 0) + cnt;
-              }
-              send(ws, MSG.TRANSCRIPT_FINAL, { text: finalText, wpm, fillers: state.fillerTotals });
+        if (msg.message_type === "PartialTranscript") {
+          send(ws, MSG.TRANSCRIPT_PARTIAL, { text: msg.text });
+        } else if (msg.message_type === "FinalTranscript") {
+          const finalText = msg.text.trim();
+          if (finalText) {
+            state.currentTranscript += " " + finalText;
+            const wordCount = finalText.split(/\s+/).length;
+            const duration = (msg.audio_end - msg.audio_start) / 1000 || 5;
+            const wpm = Math.round((wordCount / duration) * 60) || 120;
+            const fillers = ["um", "uh", "like", "basically", "you know", "sort of", "right", "literally"];
+            const lowerText = finalText.toLowerCase();
+            for (const f of fillers) {
+              const cnt = (lowerText.match(new RegExp(`\\b${f}\\b`, "g")) || []).length;
+              if (cnt > 0) state.fillerTotals[f] = (state.fillerTotals[f] || 0) + cnt;
             }
-          } else {
-            send(ws, MSG.TRANSCRIPT_PARTIAL, { text: alt.transcript });
+            send(ws, MSG.TRANSCRIPT_FINAL, { text: finalText, wpm, fillers: state.fillerTotals });
           }
-        } else if (msg.type === "UtteranceEnd") {
           if (state.currentTranscript.trim().length > 20) {
             await handleAnswerComplete(state, ws);
           }
+        } else if (msg.error) {
+          console.error("[AssemblyAI] Error from API:", msg.error);
         }
       } catch (err) {
-        console.error("[DG] Parse error:", err.message);
+        console.error("[AssemblyAI] Parse error:", err.message);
       }
     });
 
     dgWs.on("error", (err) => {
-      console.error("[DG] WebSocket error:", err.message);
+      console.error("[AssemblyAI] WebSocket error:", err.message);
       send(ws, MSG.ERROR, {
-        message: `Deepgram failed: ${err.message}. Verify DEEPGRAM_API_KEY and project billing.`,
+        message: `AssemblyAI failed: ${err.message}. Verify ASSEMBLYAI_API_KEY and project billing.`,
       });
       done();
     });
 
     dgWs.on("close", () => {
       state.isRecording = false;
-      console.log(`[DG] Closed for session ${state.sessionId}`);
+      console.log(`[AssemblyAI] Closed for session ${state.sessionId}`);
     });
 
     state.deepgramWs = dgWs;
@@ -164,43 +150,50 @@ async function handleAnswerComplete(state, ws) {
   if (!answerText || !state.currentQuestionId) return;
   state.currentTranscript = "";
 
-  // Evaluate answer
-  const evaluation = await evaluateAnswer(
-    state.currentQuestion,
-    answerText,
-    state.currentTopic,
-    state.targetRole
-  );
-
-  // Persist answer + evaluation
-  await query(
-    `UPDATE session_questions
-     SET answer_text = $1, answer_wpm = $2, filler_count = $3,
-         technical_score = $4, ai_feedback = $5, answered_at = NOW()
-     WHERE id = $6`,
-    [
+  try {
+    const evaluation = await evaluateAnswer(
+      state.currentQuestion,
       answerText,
-      evaluation.estimatedWpm || 0,
-      evaluation.fillerCount || 0,
-      evaluation.score,
-      evaluation.feedback,
-      state.currentQuestionId,
-    ]
-  );
+      state.currentTopic,
+      state.targetRole
+    );
 
-  // Add to conversation history
-  state.conversationHistory.push(
-    { role: "assistant", content: state.currentQuestion },
-    { role: "user", content: answerText }
-  );
+    // Persist answer + evaluation
+    await query(
+      `UPDATE session_questions
+       SET answer_text = $1, answer_wpm = $2, filler_count = $3,
+           technical_score = $4, ai_feedback = $5, answered_at = NOW()
+       WHERE id = $6`,
+      [
+        answerText,
+        evaluation.estimatedWpm || 0,
+        evaluation.fillerCount || 0,
+        evaluation.score,
+        evaluation.feedback,
+        state.currentQuestionId,
+      ]
+    );
 
-  send(ws, MSG.EVALUATION, {
-    questionId: state.currentQuestionId,
-    score: evaluation.score,
-    feedback: evaluation.feedback,
-    fillerWords: evaluation.fillerWords,
-    wpm: evaluation.estimatedWpm,
-  });
+    // Add to conversation history
+    state.conversationHistory.push(
+      { role: "assistant", content: state.currentQuestion },
+      { role: "user", content: answerText }
+    );
+
+    send(ws, MSG.EVALUATION, {
+      questionId: state.currentQuestionId,
+      score: evaluation.score,
+      feedback: evaluation.feedback,
+      fillerWords: evaluation.fillerWords,
+      wpm: evaluation.estimatedWpm,
+    });
+  } catch (err) {
+    console.error("[WS] Answer evaluation failed:", err);
+    send(ws, MSG.ERROR, { message: "Failed to evaluate answer: " + (err.message || String(err)) });
+    // Restore transcript so user can try again
+    state.currentTranscript = answerText;
+    return;
+  }
 
   // Generate next question (max 12)
   state.questionNumber++;
@@ -305,7 +298,7 @@ function setupWebSocket(server) {
                 });
                 return;
               }
-              await connectDeepgram(state, ws);
+              await connectAssemblyAI(state, ws);
               await generateAndSendQuestion(state, ws);
             } catch (err) {
               console.error("[WS] START failed:", err);
@@ -316,10 +309,9 @@ function setupWebSocket(server) {
         }
 
         case MSG.AUDIO_CHUNK: {
-          // Forward raw audio bytes to Deepgram
+          // Forward audio data to AssemblyAI
           if (state.deepgramWs?.readyState === WebSocket.OPEN && msg.data) {
-            const buf = Buffer.from(msg.data, "base64");
-            state.deepgramWs.send(buf);
+            state.deepgramWs.send(JSON.stringify({ audio_data: msg.data }));
           }
           break;
         }
@@ -327,7 +319,12 @@ function setupWebSocket(server) {
         case MSG.TEXT_ANSWER: {
           if (!state.sessionId || !msg.text) return;
           state.currentTranscript = msg.text;
-          await handleAnswerComplete(state, ws);
+          try {
+            await handleAnswerComplete(state, ws);
+          } catch(e) {
+            console.error("[WS] Answer hander failed:", e);
+            send(ws, MSG.ERROR, { message: "System error while processing answer." });
+          }
           break;
         }
 

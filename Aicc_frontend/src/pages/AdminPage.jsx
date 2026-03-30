@@ -7,9 +7,10 @@ import { Button, Card, Spinner, Tag, Input } from "../components/ui";
 export default function AdminPage() {
   const navigate = useNavigate();
   const token = useAuthStore((s) => s.token);
+  const logout = useAuthStore((s) => s.logout);
   const user = useAuthStore((s) => s.user);
   
-  const [data, setData] = useState({ users: [], sessions: [] });
+  const [data, setData] = useState({ users: [], sessions: [], configs: [] });
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
 
@@ -18,11 +19,19 @@ export default function AdminPage() {
 
   const [editUser, setEditUser] = useState(null);
   const [editSession, setEditSession] = useState(null);
+  const [newConfig, setNewConfig] = useState({ key: "", value: "" });
 
   const loadData = async () => {
     try {
-      const res = await api.get("/admin/system");
-      setData(res.data);
+      const [resSys, resConf] = await Promise.all([
+        api.get("/admin/system"),
+        api.get("/admin/configs")
+      ]);
+      setData({
+        users: resSys.data.users,
+        sessions: resSys.data.sessions,
+        configs: resConf.data.configs
+      });
     } catch (e) {
       setErr(e.response?.data?.error || "Failed to load admin data");
     } finally {
@@ -67,6 +76,16 @@ export default function AdminPage() {
     } catch (e) { alert(e.response?.data?.error || "Error updating session"); }
   };
 
+  const handleUpdateConfig = async (key, val) => {
+    try {
+      let parsedVal = val;
+      try { parsedVal = JSON.parse(val); } catch(_) {} // allow raw string or json 
+      await api.put(`/admin/configs/${key}`, { value: parsedVal });
+      setNewConfig({ key: "", value: "" });
+      loadData();
+    } catch (e) { alert(e.response?.data?.error || "Error updating config"); }
+  };
+
   const removeUser = async (id) => {
     if (!window.confirm("Are you sure? This deletes the user and ALL their data.")) return;
     try {
@@ -93,25 +112,23 @@ export default function AdminPage() {
     <div style={{ minHeight: "100vh", background: "var(--bg)", padding: 32 }}>
       <div style={{ maxWidth: 1100, margin: "0 auto" }}>
         
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 32 }}>
+        <div className="appear" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 32 }}>
           <div>
             <div style={{ fontFamily: "DM Serif Display, serif", fontSize: 28, color: "var(--red)" }}>System Administration</div>
             <p style={{ color: "var(--text2)", marginTop: 6 }}>Manage platform users and active sessions</p>
           </div>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-            <Button onClick={() => navigate("/onboarding")}>Take Interview</Button>
-            <Button variant="secondary" onClick={() => navigate("/dashboard")}>Back to Dashboard</Button>
+            <Button variant="ghost" onClick={() => { logout(); navigate("/"); }}>Log out</Button>
           </div>
         </div>
 
         {err && <div style={{ color: "var(--amber)", marginBottom: 20 }}>{err}</div>}
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
+        <div className="appear delay-1" style={{ display: "flex", flexDirection: "column", gap: 32 }}>
           
-          <Card style={{ padding: 24 }}>
+          <Card className="hover-card" style={{ padding: 24 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <div style={{ fontWeight: 600, fontSize: 18 }}>Users ({data.users?.length || 0})</div>
-              <Button size="sm" onClick={() => setShowAddUser(true)}>+ Add User</Button>
             </div>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", textAlign: "left", borderCollapse: "collapse", fontSize: 14 }}>
@@ -189,6 +206,26 @@ export default function AdminPage() {
                   ))}
                 </tbody>
               </table>
+            </div>
+          </Card>
+
+          <Card style={{ padding: 24 }}>
+            <div style={{ fontWeight: 600, fontSize: 18, marginBottom: 16 }}>System Configurations ({data.configs?.length || 0})</div>
+            <div style={{ marginBottom: 20, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+              <Input placeholder="Key (e.g. ATS_STRICTNESS)" value={newConfig.key} onChange={e => setNewConfig(p => ({ ...p, key: e.target.value }))} style={{ flex: 1, minWidth: 200 }} />
+              <Input placeholder="Value (JSON or String)" value={newConfig.value} onChange={e => setNewConfig(p => ({ ...p, value: e.target.value }))} style={{ flex: 1, minWidth: 200 }} />
+              <Button onClick={() => handleUpdateConfig(newConfig.key, newConfig.value)} disabled={!newConfig.key || !newConfig.value}>Set Config</Button>
+            </div>
+            
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {(data.configs || []).map(c => (
+                <div key={c.key} style={{ display: "flex", justifyContent: "space-between", padding: 12, background: "var(--bg3)", borderRadius: 6, alignItems: "center" }}>
+                  <div style={{ fontWeight: 500 }}>{c.key}</div>
+                  <div style={{ color: "var(--text2)", fontFamily: "monospace", background: "var(--bg)", padding: "4px 8px", borderRadius: 4 }}>
+                    {typeof c.value === 'object' ? JSON.stringify(c.value) : c.value}
+                  </div>
+                </div>
+              ))}
             </div>
           </Card>
 

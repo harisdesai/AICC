@@ -94,7 +94,7 @@ function signUser(user) {
 app.get("/api/health/features", (req, res) => {
   res.json({
     groq: Boolean(process.env.GROQ_API_KEY?.trim()),
-    deepgram: Boolean(process.env.DEEPGRAM_API_KEY?.trim()),
+    assemblyai: Boolean(process.env.ASSEMBLYAI_API_KEY?.trim()),
     gemini: Boolean(process.env.GEMINI_API_KEY?.trim()),
     chroma: Boolean(process.env.CHROMA_URL?.trim()),
   });
@@ -114,9 +114,16 @@ app.get("/api/health/features", (req, res) => {
   }
 })();
 
-const requireAdmin = (req, res, next) => {
-  if (req.user.email !== "admin@123") return res.status(403).json({ error: "Forbidden: Admin only" });
-  next();
+const requireAdmin = async (req, res, next) => {
+  try {
+    const r = await query("SELECT email FROM users WHERE id = $1", [req.user.id]);
+    if (r.rows[0]?.email !== "admin@123") {
+      return res.status(403).json({ error: "Forbidden: Admin only" });
+    }
+    next();
+  } catch (err) {
+    return res.status(500).json({ error: "Server error" });
+  }
 };
 
 app.post("/api/auth/register", ...authRoute, async (req, res, next) => {
@@ -210,14 +217,30 @@ app.get("/api/resume/latest/review", authenticate, async (req, res, next) => {
       }
     } catch (_) {}
     
-    if (raw_json.review) {
-      return res.json(raw_json.review);
+    let review = raw_json.review;
+    if (!review) {
+      // Fallback if not baked in yet
+      const { generateResumeReview } = require("./groq");
+      review = await generateResumeReview(raw_json);
     }
     
-    // Fallback if not baked in yet
-    const { generateResumeReview } = require("./groq");
-    const review = await generateResumeReview(raw_json);
-    res.json(review);
+    // --- Incorporate GitHub Profile Review ---
+    let githubReview = null;
+    try {
+      const uRes = await query("SELECT github_url FROM users WHERE id = $1", [req.user.id]);
+      const githubUrl = uRes.rows[0]?.github_url;
+      if (githubUrl) {
+        const repoRes = await query("SELECT repo_name, description, languages, stars FROM github_repos WHERE user_id = $1 ORDER BY stars DESC LIMIT 10", [req.user.id]);
+        if (repoRes.rows.length > 0) {
+          const { analyzeGithubProfile } = require("./groq");
+          githubReview = await analyzeGithubProfile(repoRes.rows);
+        }
+      }
+    } catch (err) {
+      console.warn("[Server] Failed to generate GitHub review:", err.message);
+    }
+
+    res.json({ review, githubReview });
   } catch (err) { next(err); }
 });
 
@@ -229,7 +252,11 @@ app.post("/api/sessions", authenticate, async (req, res, next) => {
     if (!check.rows.length) return res.status(404).json({ error: "Resume not found" });
     if (githubUrl) {
       await query("UPDATE users SET github_url = $1 WHERE id = $2", [githubUrl, req.user.id]);
-      indexGithubRepos(req.user.id, githubUrl).catch((e) => console.warn("[RAG] Background index:", e.message));
+      try {
+        await indexGithubRepos(req.user.id, githubUrl);
+      } catch (e) {
+        console.warn("[RAG] Indexing failed:", e.message);
+      }
     }
     const id = uuidv4();
     await query(
@@ -418,6 +445,28 @@ app.put("/api/admin/sessions/:id", authenticate, requireAdmin, async (req, res, 
       SET target_role = $1, status = $2, overall_score = $3 
       WHERE id = $4
     `, [target_role, status, overall_score, req.params.id]);
+    res.json({ ok: true });
+  } catch (err) { next(err); }
+});
+
+app.get("/api/admin/configs", authenticate, requireAdmin, async (req, res, next) => {
+  try {
+    const r = await query("SELECT key, value, updated_at FROM system_configs ORDER BY key ASC");
+    res.json({ configs: r.rows });
+  } catch (err) { next(err); }
+});
+
+app.put("/api/admin/configs/:key", authenticate, requireAdmin, async (req, res, next) => {
+  try {
+    const key = req.params.key;
+    const { value } = req.body;
+    if (!key) return res.status(400).json({ error: "Key required" });
+    
+    await query(`
+      INSERT INTO system_configs (key, value, updated_at) 
+      VALUES ($1, $2, NOW()) 
+      ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()
+    `, [key, JSON.stringify(value)]);
     res.json({ ok: true });
   } catch (err) { next(err); }
 });

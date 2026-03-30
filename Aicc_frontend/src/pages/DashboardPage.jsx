@@ -12,6 +12,7 @@ export default function DashboardPage() {
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [review, setReview] = useState(null);
+  const [githubReview, setGithubReview] = useState(null);
 
 
   useEffect(() => {
@@ -26,7 +27,10 @@ export default function DashboardPage() {
           if (p.data?.resumes?.length > 0) {
             try {
               const { data } = await api.get("/resume/latest/review");
-              setReview(data);
+              setReview(data.review || data);
+              if (data.githubReview) {
+                setGithubReview(data.githubReview);
+              }
             } catch (_) {}
           }
         }
@@ -50,7 +54,7 @@ export default function DashboardPage() {
   return (
     <div style={{ minHeight: "100vh", background: "var(--bg)", padding: "32px 24px" }}>
       <div style={{ maxWidth: 900, margin: "0 auto" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 16, marginBottom: 32 }}>
+        <div className="appear" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 16, marginBottom: 32 }}>
           <div>
             <div style={{ fontFamily: "DM Serif Display, serif", fontSize: 26 }}>Dashboard</div>
             <p style={{ color: "var(--text2)", marginTop: 6 }}>{user?.name || profile?.user?.name || "Welcome"}</p>
@@ -65,7 +69,7 @@ export default function DashboardPage() {
         </div>
 
         {review && (
-          <Card style={{ padding: 24, marginBottom: 28 }}>
+          <Card className="appear delay-1 hover-card" style={{ padding: 24, marginBottom: 28 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
               <div style={{ fontWeight: 600, fontSize: 18 }}>Resume Review Report</div>
               <div style={{ background: "var(--indigo-dim)", color: "var(--indigo)", padding: "4px 12px", borderRadius: 16, fontWeight: 600 }}>
@@ -113,17 +117,50 @@ export default function DashboardPage() {
           </Card>
         )}
 
+        {githubReview && (
+          <Card className="appear delay-1 hover-card" style={{ padding: 24, marginBottom: 28, background: "var(--bg3)", border: "1px solid var(--border)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
+              <div style={{ fontWeight: 600, fontSize: 18 }}>GitHub Profile Analysis</div>
+              <div style={{ background: "var(--indigo-dim)", color: "var(--indigo)", padding: "4px 12px", borderRadius: 16, fontWeight: 600 }}>
+                Score: {githubReview.score}
+              </div>
+            </div>
+            
+            <p style={{ fontSize: 14, color: "var(--text)", marginBottom: 16, lineHeight: 1.6 }}>
+              {githubReview.summary}
+            </p>
+
+            {githubReview.strengths?.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontWeight: 500, marginBottom: 8, color: "var(--green)" }}>Key Strengths</div>
+                <ul style={{ paddingLeft: 20, fontSize: 14, color: "var(--text2)", margin: 0, lineHeight: 1.6 }}>
+                  {githubReview.strengths.map((s, i) => <li key={i}>{s}</li>)}
+                </ul>
+              </div>
+            )}
+            
+            {githubReview.areas_for_growth?.length > 0 && (
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontWeight: 500, marginBottom: 8, color: "var(--amber)" }}>Areas For Growth</div>
+                <ul style={{ paddingLeft: 20, fontSize: 14, color: "var(--text2)", margin: 0, lineHeight: 1.6 }}>
+                  {githubReview.areas_for_growth.map((s, i) => <li key={i}>{s}</li>)}
+                </ul>
+              </div>
+            )}
+          </Card>
+        )}
+
         {profile?.stats && (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 28 }}>
-            <Card style={{ padding: 18 }}>
+          <div className="appear delay-2" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 28 }}>
+            <Card className="hover-card" style={{ padding: 18 }}>
               <div style={{ fontSize: 11, color: "var(--text3)" }}>Sessions</div>
               <div style={{ fontSize: 24, fontWeight: 600 }}>{profile.stats.total_sessions || 0}</div>
             </Card>
-            <Card style={{ padding: 18 }}>
+            <Card className="hover-card" style={{ padding: 18 }}>
               <div style={{ fontSize: 11, color: "var(--text3)" }}>Avg score</div>
               <div style={{ fontSize: 24, fontWeight: 600 }}>{profile.stats.avg_score ?? "—"}</div>
             </Card>
-            <Card style={{ padding: 18 }}>
+            <Card className="hover-card" style={{ padding: 18 }}>
               <div style={{ fontSize: 11, color: "var(--text3)" }}>Best</div>
               <div style={{ fontSize: 24, fontWeight: 600 }}>{profile.stats.best_score ?? "—"}</div>
             </Card>
@@ -134,26 +171,48 @@ export default function DashboardPage() {
         {sessions.length === 0 ? (
           <Card style={{ padding: 28, color: "var(--text2)" }}>No sessions yet. Start one from onboarding.</Card>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div className="appear delay-3" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {sessions.map((row) => (
-              <Card key={row.id} style={{ padding: 18, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
-                <div>
-                  <Tag>{row.target_role || "Role"}</Tag>
-                  <div style={{ marginTop: 8, fontSize: 13, color: "var(--text2)" }}>
-                    {new Date(row.created_at).toLocaleString()}
+              <div
+                key={row.id}
+                className="hover-card cursor-pointer"
+                onClick={() => navigate(row.status === "active" ? `/interview/${row.id}` : `/report/${row.id}`)}
+                style={{
+                  background: "var(--surface)", border: "1px solid var(--border)",
+                  borderRadius: "var(--radius)", padding: 20,
+                  display: "flex", alignItems: "center", gap: 16,
+                  transition: "border-color 0.15s"
+                }}
+              >
+                <div style={{
+                  width: 48, height: 48, borderRadius: "var(--radius-sm)",
+                  background: "var(--accent-dim)", border: "1px solid rgba(124,107,255,0.2)",
+                  display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22,
+                  flexShrink: 0
+                }}>
+                  {row.status === 'active' ? '🎙️' : '💼'}
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 15, fontWeight: 500, marginBottom: 4 }}>
+                    {row.target_role || "Interview Session"}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--text3)", display: "flex", alignItems: "center", gap: 8 }}>
+                    {new Date(row.created_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
                     {" · "}
-                    <span style={{ textTransform: "capitalize" }}>{row.status}</span>
-                    {row.overall_score != null && ` · Score ${row.overall_score}`}
+                    {row.status === 'active' ? (
+                      <span className="tag amber" style={{ fontSize: 10 }}>In Progress</span>
+                    ) : (
+                      <span className="tag green" style={{ fontSize: 10 }}>Completed</span>
+                    )}
                   </div>
                 </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  {row.status === "active" ? (
-                    <Link to={`/interview/${row.id}`}><Button variant="ghost">Continue</Button></Link>
-                  ) : (
-                    <Link to={`/report/${row.id}`}><Button variant="ghost">Report</Button></Link>
-                  )}
-                </div>
-              </Card>
+                {row.overall_score != null && (
+                  <div style={{ fontSize: 22, fontWeight: 600, color: "var(--green)", fontFamily: "'DM Mono', monospace" }}>
+                    {row.overall_score}
+                  </div>
+                )}
+                <div style={{ marginLeft: 8, color: "var(--text3)" }}>→</div>
+              </div>
             ))}
           </div>
         )}

@@ -7,7 +7,7 @@ function AuthLayout({ children, title, subtitle }) {
   return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24, background: "var(--bg)", position: "relative" }}>
       <div style={{ position: "fixed", inset: 0, backgroundImage: "linear-gradient(rgba(124,107,255,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(124,107,255,0.03) 1px, transparent 1px)", backgroundSize: "48px 48px", pointerEvents: "none" }} />
-      <div style={{ width: "100%", maxWidth: 420, position: "relative", zIndex: 1 }}>
+      <div className="appear" style={{ width: "100%", maxWidth: 420, position: "relative", zIndex: 1 }}>
         <div style={{ textAlign: "center", marginBottom: 40 }}>
           <div style={{ fontFamily: "DM Serif Display, serif", fontSize: 28, marginBottom: 8 }}>AI<span style={{ color: "var(--accent2)" }}>CC</span></div>
           <h1 style={{ fontFamily: "DM Serif Display, serif", fontSize: 28, letterSpacing: "-0.5px", marginBottom: 8 }}>{title}</h1>

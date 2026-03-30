@@ -236,13 +236,14 @@ Also include an array of 'bullet_critiques' where you extract 3 weak bullets and
 Output ONLY valid JSON:
 {
   "score": <0-100 STRICT ATS readability and impact score>,
-  "strengths": ["<strength 1>", "<strength 2>"],
-  "improvements": ["<actionable improvement 1>", "<actionable improvement 2>"],
-  "missingKeywords": ["<keyword 1>", "<keyword 2>"],
+  "strengths": ["<real specific strength found in their formatting>"],
+  "improvements": ["<real actionable improvement missing from their resume>"],
+  "missingKeywords": ["<actual tech keyword missing>"],
   "bullet_critiques": [
-    { "original": "<weak text>", "rewrite": "<optimized with metrics action-verb>", "reason": "<why it failed the ATS logic>" }
+    { "original": "<their exact original weak text>", "rewrite": "<optimized with metrics action-verb>", "reason": "<why the original failed the ATS logic>" }
   ]
-}`;
+}
+DO NOT output placeholder values like "<actionable improvement 1>" or "<strength 1>". Use their actual data carefully!`;
 
   try {
     const groq = getGroq();
@@ -261,4 +262,44 @@ Output ONLY valid JSON:
   }
 }
 
-module.exports = { generateFirstQuestion, generateFollowUpQuestion, evaluateAnswer, generateKnowledgeGaps, getTopicsForRole, generateResumeReview };
+async function analyzeGithubProfile(repos) {
+  if (!repos || repos.length === 0) {
+    return { score: 0, summary: "No public repositories found.", strengths: [], areas_for_growth: [] };
+  }
+
+  const reposSummary = repos.slice(0, 10).map(r => 
+    `Repo: ${r.repo_name} | Stars: ${r.stars} | Languages: ${JSON.stringify(r.languages)} | Desc: ${r.description || 'N/A'}`
+  ).join("\n");
+
+  const prompt = `You are a strict technical recruiter evaluating a candidate's GitHub profile.
+Based on the following repository data, provide an evaluation of their open-source presence and coding activity:
+
+${reposSummary}
+
+Return ONLY valid JSON:
+{
+  "score": <0-100 score>,
+  "summary": "<real summary of their actual developer profile based on their repos>",
+  "strengths": ["<real specific strength from data>"],
+  "areas_for_growth": ["<real specific area of growth or lack of repos>"]
+}
+DO NOT output placeholder values like "<strength 1>". Use the actual data!`;
+
+  try {
+    const groq = getGroq();
+    const completion = await groq.chat.completions.create({
+      model: GROQ_MODEL,
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: 400,
+      temperature: 0.3,
+    });
+    let raw = completion.choices[0].message.content.trim();
+    raw = raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1);
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error("[Groq] GitHub review failed:", err.message);
+    return { score: 0, summary: "Failed to analyze GitHub profile.", strengths: [], areas_for_growth: [] };
+  }
+}
+
+module.exports = { generateFirstQuestion, generateFollowUpQuestion, evaluateAnswer, generateKnowledgeGaps, getTopicsForRole, generateResumeReview, analyzeGithubProfile };

@@ -74,5 +74,11 @@ CREATE TABLE IF NOT EXISTS github_repos (
   UNIQUE(user_id, repo_name)
 );
 
+CREATE TABLE IF NOT EXISTS system_configs (
+  key VARCHAR(255) PRIMARY KEY,
+  value JSONB,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON interview_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_questions_session ON session_questions(session_id);

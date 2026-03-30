@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import api from "../lib/api";
-import { Button, Input, Card, Spinner } from "../components/ui";
+import { Button, Input, Card, Spinner, Tag } from "../components/ui";
 
 const ROLES = [
   "Backend Engineer",
@@ -15,17 +15,19 @@ export default function OnboardingPage() {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [resumeId, setResumeId] = useState(null);
+  const [resumeName, setResumeName] = useState("");
   const [uploading, setUploading] = useState(false);
   const [targetRole, setTargetRole] = useState(ROLES[0]);
   const [githubUrl, setGithubUrl] = useState("");
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
+  const [dragging, setDragging] = useState(false);
 
-  const onFile = async (e) => {
-    const file = e.target.files?.[0];
+  const processFile = async (file) => {
     if (!file) return;
     setError("");
     setUploading(true);
+    setResumeName(file.name);
     try {
       const fd = new FormData();
       fd.append("resume", file);
@@ -37,6 +39,16 @@ export default function OnboardingPage() {
     } finally {
       setUploading(false);
     }
+  };
+
+  const onFile = (e) => {
+    processFile(e.target.files?.[0]);
+  };
+
+  const onDrop = (e) => {
+    e.preventDefault();
+    setDragging(false);
+    processFile(e.dataTransfer.files?.[0]);
   };
 
   const startSession = async (e) => {
@@ -59,45 +71,119 @@ export default function OnboardingPage() {
   };
 
   return (
-    <div style={{ minHeight: "100vh", padding: "48px 24px", background: "var(--bg)" }}>
-      <div style={{ maxWidth: 520, margin: "0 auto" }}>
-        <div style={{ fontFamily: "DM Serif Display, serif", fontSize: 26, marginBottom: 8 }}>Onboarding</div>
-        <p style={{ color: "var(--text2)", fontSize: 14, marginBottom: 32 }}>Upload your resume, then choose a role and optional GitHub profile for RAG context.</p>
+    <div style={{ minHeight: "100vh", padding: "48px 24px", background: "var(--bg)", display: "flex", justifyContent: "center" }}>
+      <div style={{ width: "100%", maxWidth: 680 }}>
+        
+        <div className="appear step-indicator">
+          <div className={`step ${step >= 1 ? "active" : "pending"}`}>
+            <div className="step-dot">1</div>
+            <span style={{ fontSize: 13, color: step >= 1 ? "var(--text2)" : "var(--text3)" }}>Profile</span>
+          </div>
+          <div className="step-line" />
+          <div className={`step ${step >= 2 ? "active" : "pending"}`}>
+            <div className="step-dot">2</div>
+            <span style={{ fontSize: 13, color: step >= 2 ? "var(--text2)" : "var(--text3)" }}>Job Target</span>
+          </div>
+          <div className="step-line" />
+          <div className={`step pending`}>
+            <div className="step-dot">3</div>
+            <span style={{ fontSize: 13, color: "var(--text3)" }}>Interview</span>
+          </div>
+        </div>
+
+        <div className="appear delay-1" style={{ marginBottom: 40 }}>
+          <h2 style={{ fontFamily: "DM Serif Display, serif", fontSize: 36, marginBottom: 12, letterSpacing: "-1px" }}>Set up your profile</h2>
+          <p style={{ color: "var(--text2)", fontSize: 15 }}>Upload your resume and link your professional profiles. AICC uses these to tailor every question to you.</p>
+        </div>
 
         {step === 1 && (
-          <Card style={{ padding: 28 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 16 }}>1. Resume (PDF)</div>
-            <label style={{ display: "block", cursor: "pointer", border: "1px dashed var(--border2)", borderRadius: "var(--radius)", padding: 32, textAlign: "center", color: "var(--text2)" }}>
-              {uploading ? <Spinner /> : "Click to choose PDF"}
+          <div className="appear delay-2">
+            <label 
+              className={`drop-zone ${dragging ? 'dragging' : ''}`}
+              onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={onDrop}
+              style={{ display: "block" }}
+            >
               <input type="file" accept="application/pdf" style={{ display: "none" }} onChange={onFile} disabled={uploading} />
+              
+              {uploading ? (
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+                  <Spinner size={40} />
+                  <h3 style={{ fontSize: 16, fontWeight: 500, marginTop: 16, marginBottom: 8 }}>Parsing Resume...</h3>
+                  <p style={{ fontSize: 13, color: "var(--text3)" }}>Extracting skills and timeline with Gemini 2.5</p>
+                </div>
+              ) : resumeId ? (
+                <>
+                  <div className="drop-icon" style={{ color: "var(--green)" }}>✓</div>
+                  <h3 style={{ fontSize: 16, fontWeight: 500, marginBottom: 8, color: "var(--green)" }}>{resumeName}</h3>
+                  <p style={{ fontSize: 13, color: "var(--text2)" }}>Ready to proceed</p>
+                </>
+              ) : (
+                <>
+                  <div className="drop-icon">📎</div>
+                  <h3 style={{ fontSize: 16, fontWeight: 500, marginBottom: 8 }}>Drop your resume here</h3>
+                  <p style={{ fontSize: 13, color: "var(--text3)" }}>PDF format · Max 5MB</p>
+                </>
+              )}
             </label>
-            {error && <p style={{ color: "var(--red)", fontSize: 13, marginTop: 12 }}>{error}</p>}
-          </Card>
+            {error && <p style={{ color: "var(--red)", fontSize: 13, marginTop: 12, textAlign: "center" }}>{error}</p>}
+          </div>
         )}
 
         {step === 2 && (
-          <Card style={{ padding: 28 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 20 }}>2. Interview focus</div>
-            <form onSubmit={startSession} style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-              <div>
-                <label style={{ fontSize: 12, color: "var(--text3)", textTransform: "uppercase", letterSpacing: "0.8px" }}>Target role</label>
-                <select
-                  value={targetRole}
-                  onChange={(e) => setTargetRole(e.target.value)}
-                  style={{
-                    marginTop: 8, width: "100%", padding: "12px 14px", borderRadius: "var(--radius-sm)",
-                    background: "var(--bg3)", border: "1px solid var(--border2)", color: "var(--text)", fontSize: 14,
-                  }}
-                >
-                  {ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
-                </select>
-              </div>
-              <Input label="GitHub profile URL (optional)" value={githubUrl} onChange={(e) => setGithubUrl(e.target.value)} placeholder="https://github.com/username" />
-              {error && <p style={{ color: "var(--red)", fontSize: 13 }}>{error}</p>}
-              <Button type="submit" loading={creating} size="lg">Start interview</Button>
-            </form>
-          </Card>
+          <div className="appear delay-1">
+            <Card style={{ padding: 32, marginBottom: 32 }}>
+              <form onSubmit={startSession} style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+                
+                <div>
+                  <p style={{ fontSize: 13, color: "var(--text3)", marginBottom: 12, textTransform: "uppercase", letterSpacing: "0.8px" }}>Target Role</p>
+                  <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+                    <input
+                      type="text"
+                      className="url-input"
+                      value={targetRole}
+                      onChange={(e) => setTargetRole(e.target.value)}
+                      placeholder="e.g. Backend Engineer — Python, AWS"
+                      style={{ flex: 1, background: "var(--bg3)", border: "1px solid var(--border2)", color: "var(--text)", borderRadius: "var(--radius-sm)", padding: "10px 14px", fontFamily: "Outfit, sans-serif", fontSize: 14, outline: "none" }}
+                    />
+                  </div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 10 }}>
+                    {ROLES.map((role) => (
+                      <span key={role} className="tag accent hover-scale" style={{ cursor: "pointer" }} onClick={() => setTargetRole(role)}>
+                        {role}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <p style={{ fontSize: 13, color: "var(--text3)", marginBottom: 12, textTransform: "uppercase", letterSpacing: "0.8px" }}>Professional Profiles</p>
+                  <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+                    <input
+                      className="url-input"
+                      type="text"
+                      placeholder="🐙  github.com/your-username"
+                      value={githubUrl}
+                      onChange={(e) => setGithubUrl(e.target.value)}
+                      style={{ flex: 1, background: "var(--bg3)", border: "1px solid var(--border2)", color: "var(--text)", borderRadius: "var(--radius-sm)", padding: "10px 14px", fontFamily: "Outfit, sans-serif", fontSize: 14, outline: "none" }}
+                    />
+                  </div>
+                </div>
+
+                {error && <p style={{ color: "var(--red)", fontSize: 13 }}>{error}</p>}
+              </form>
+            </Card>
+          </div>
         )}
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 32 }}>
+          <Button variant="ghost" onClick={() => step === 2 ? setStep(1) : navigate("/dashboard")} style={{ fontSize: 14, padding: "12px 24px" }}>← Back</Button>
+          <Button variant="primary" onClick={step === 2 ? startSession : undefined} loading={creating} disabled={step !== 2} style={{ fontSize: 15, padding: "12px 32px" }}>
+            Begin Interview →
+          </Button>
+        </div>
+
       </div>
     </div>
   );
