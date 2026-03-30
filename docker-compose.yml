@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: aicc
+    ports:
+      - "5432:5432"
+    volumes:
+      - aicc_pg:/var/lib/postgresql/data
+  chroma:
+    image: chromadb/chroma:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - aicc_chroma:/chroma/chroma
+volumes:
+  aicc_pg:
+  aicc_chroma:
