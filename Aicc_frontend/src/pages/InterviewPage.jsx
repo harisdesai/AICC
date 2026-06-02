@@ -8,12 +8,19 @@ import { useEmotionDetection } from "../hooks/useEmotionDetection";
 import { Button, Card, Tag, Spinner } from "../components/ui";
 import { LineChart, Line, ResponsiveContainer, XAxis, YAxis, CartesianGrid } from "recharts";
 
+/**
+ * Interactive React Workspace Component for Live Interviews.
+ * 
+ * Sets up camera feed, real-time voice capturing, streaming transcription,
+ * live facial expressions metrics tracking, and question-answer sequences.
+ */
 export default function InterviewPage() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
   const token = useAuthStore((s) => s.token);
   const videoRef = useRef(null);
 
+  // Core loading and session states
   const [loading, setLoading] = useState(true);
   const [sessionPayload, setSessionPayload] = useState(null);
   const [mediaStream, setMediaStream] = useState(null);
@@ -27,16 +34,20 @@ export default function InterviewPage() {
   const [textAnswer, setTextAnswer] = useState("");
   const [interviewStarted, setInterviewStarted] = useState(false);
   
-  // UI States
+  // UI metrics tracking states
   const [latestEmotion, setLatestEmotion] = useState({ neutral: 1, happy: 0, sad: 0, fearful: 0, surprised: 0, disgusted: 0, angry: 0 });
   const [timerSeconds, setTimerSeconds] = useState(0);
 
+  /**
+   * Dispatches text input to the active websocket as a fallback answer mechanism.
+   */
   const handleTextSubmit = () => {
     if (!textAnswer.trim()) return;
     sendRef.current("text_answer", { text: textAnswer.trim() });
     setTextAnswer("");
   };
 
+  // Fetch session parameters on mount
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -52,6 +63,7 @@ export default function InterviewPage() {
     return () => { cancelled = true; };
   }, [sessionId]);
 
+  // Load app wide system flags/features configuration
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -65,7 +77,7 @@ export default function InterviewPage() {
     return () => { cancelled = true; };
   }, []);
 
-  // Timer
+  // Timer interval updating interview session duration
   useEffect(() => {
     if (!interviewStarted) return;
     const interval = setInterval(() => {
@@ -74,12 +86,19 @@ export default function InterviewPage() {
     return () => clearInterval(interval);
   }, [interviewStarted]);
 
+  /**
+   * Formats total seconds into MM:SS format.
+   * 
+   * @param {number} s - Time in seconds
+   * @returns {string} Formatted string
+   */
   const formatTimer = (s) => {
     const m = Math.floor(s / 60);
     const secs = s % 60;
     return `${m}:${secs < 10 ? '0' : ''}${secs}`;
   };
 
+  // Media Capture Initialization: requests mic/cam permissions from user
   useEffect(() => {
     if (!sessionPayload || !interviewStarted) return undefined;
     let stream;
@@ -112,7 +131,11 @@ export default function InterviewPage() {
 
   const sendAudioRef = useRef(() => {});
 
+  /**
+   * Listens to and acts on server websocket events.
+   */
   const onMessage = useCallback((msg) => {
+    // Auth success: start the interview loop
     if (msg.type === "auth_ok" && sessionPayload && !startedRef.current) {
       startedRef.current = true;
       sendRef.current("start_session", {
@@ -127,23 +150,28 @@ export default function InterviewPage() {
       setErr(msg.message || "Auth failed");
       return;
     }
+    // New question received: update DOM question display
     if (msg.type === "question") {
       setQuestion(msg);
       setPartial("");
       return;
     }
+    // Partial real-time voice transcription
     if (msg.type === "transcript_partial") {
       setPartial(msg.text || "");
       return;
     }
+    // Final transcription block completed
     if (msg.type === "transcript_final") {
       setPartial("");
       return;
     }
+    // Intermediate question answer grading
     if (msg.type === "evaluation") {
       setEvaluations((prev) => [...prev, msg]);
       return;
     }
+    // Interview ended: trigger server analytics report and navigate
     if (msg.type === "session_end") {
       (async () => {
         try {
@@ -159,21 +187,25 @@ export default function InterviewPage() {
   }, [sessionPayload, sessionId, navigate]);
 
   const sendRef = useRef(() => {});
+  // Initialize interview websocket connector
   const { connect, send, sendAudio, disconnect } = useInterviewSocket({ onMessage, token });
   sendRef.current = send;
   sendAudioRef.current = sendAudio;
 
+  // Initialize microphone device streaming wrapper
   const { start: startMic, stop: stopMic, active: micActive, error: micError } = useMicrophone({
     mediaStream,
     onAudioChunk: useCallback((buf) => sendAudioRef.current(buf), []),
   });
 
+  // Socket connection trigger
   useEffect(() => {
     if (token && !loading && sessionPayload && interviewStarted) connect();
     return () => disconnect();
   }, [token, loading, sessionPayload, interviewStarted, connect, disconnect]);
 
   const emotionSendRef = useRef(() => {});
+  // Maps face expression predictions and dispatches to server
   emotionSendRef.current = (emotion) => {
     const s = emotion.scores || {};
     setLatestEmotion({
@@ -196,17 +228,22 @@ export default function InterviewPage() {
     });
   };
 
+  // Initialize face-api emotion classifications
   const { ready: faceReady, start: startFace, stop: stopFace } = useEmotionDetection({
     videoRef,
     onEmotion: (e) => emotionSendRef.current(e),
     intervalMs: 500,
   });
 
+  // Start polling face expressions when camera is ready
   useEffect(() => {
     if (mediaStream && faceReady && interviewStarted) startFace();
     return () => stopFace();
   }, [mediaStream, faceReady, startFace, stopFace, interviewStarted]);
 
+  /**
+   * Concludes the interview manually.
+   */
   const endSession = async () => {
     stopMic();
     disconnect();
@@ -216,12 +253,18 @@ export default function InterviewPage() {
     navigate(`/report/${sessionId}`);
   };
 
+  /**
+   * Iterates emotion state scores to isolate the highest classification weight.
+   * 
+   * @returns {Object} Target classification parameter
+   */
   const getDominantEmotion = () => {
     const highest = Object.keys(latestEmotion).reduce((a, b) => latestEmotion[a] > latestEmotion[b] ? a : b);
     return { name: highest, value: latestEmotion[highest] };
   };
   const domE = getDominantEmotion();
 
+  // Mock speaking pace trace array
   const wpmData = [
     { name: 'Q1', value: 128 }, { name: 'Q2', value: 145 }, { name: 'Q3', value: 142 },
     { name: 'Q4', value: 160 }, { name: 'Q5', value: 138 }, { name: 'Q6', value: 142 },
@@ -244,7 +287,7 @@ export default function InterviewPage() {
     );
   }
 
-  // Centered setup if interview has NOT started
+  // Centered setup view displayed if interview has NOT started
   if (!interviewStarted) {
     return (
       <div style={{ minHeight: "100vh", background: "var(--bg)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>

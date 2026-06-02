@@ -1,4 +1,14 @@
 "use strict";
+/**
+ * AICC Backend Main Server Entry Point
+ * 
+ * Sets up the HTTP server, Express routing middleware, and initializes the WebSocket engine.
+ * Key responsibilities:
+ * 1. Loads configuration settings from environment variables (.env).
+ * 2. Connects standard request parsing and security middleware (Helmet, CORS, Rate Limit).
+ * 3. Mounts REST API modules (Auth, Resumes, Profile, Admin Dashboard configs).
+ * 4. Integrates the WebSocket engine for interactive streaming sessions.
+ */
 
 require("dotenv").config({ path: require("path").join(__dirname, "..", ".env") });
 
@@ -176,13 +186,42 @@ app.get("/api/auth/me", authenticate, async (req, res, next) => {
 
 app.use("/api/profile", profileRouter);
 
+/**
+ * @route   POST /api/resume
+ * @desc    Upload and parse candidate resume PDF
+ * @access  Private
+ * 
+ * Handles resume uploads by piping file binaries through Gemini or Groq fallback,
+ * running technical reviews, and storing parsed outputs.
+ */
 app.post("/api/resume", authenticate, upload.single("resume"), async (req, res, next) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No file" });
-    const parsed = await parseResumeWithGemini(req.file.path);
+    let parsed;
+    let geminiErr = null;
+    try {
+      // Primary parser: Gemini 2.0 Flash
+      parsed = await parseResumeWithGemini(req.file.path);
+    } catch (gErr) {
+      console.warn("[Server] Gemini parsing failed, trying Groq fallback...", gErr.message);
+      geminiErr = gErr;
+      try {
+        // Tiered Fallback: Groq text-extraction matching
+        const { parseResumeWithGroq } = require("./parserFallback");
+        parsed = await parseResumeWithGroq(req.file.path);
+        console.log("[Server] Fallback Groq parsing succeeded!");
+      } catch (grErr) {
+        console.error("[Server] Groq fallback parsing failed:", grErr.message);
+        throw new Error(
+          `Resume parsing failed. Gemini Error: ${gErr.message}. Groq Fallback Error: ${grErr.message}`
+        );
+      }
+    }
+
     try { fs.unlinkSync(req.file.path); } catch (_) { /* ignore */ }
     
     // --- Realtime Resume Evaluation ---
+    // Perform technical quality audit on parsed resume details
     const { generateResumeReview } = require("./groq");
     const review = await generateResumeReview(parsed);
     parsed.review = review;
@@ -198,13 +237,15 @@ app.post("/api/resume", authenticate, upload.single("resume"), async (req, res, 
   } catch (err) {
     try { if (req.file?.path) fs.unlinkSync(req.file.path); } catch (_) { /* ignore */ }
     const msg = err?.message || String(err);
-    if (/GEMINI_API_KEY|API key|401|403/i.test(msg)) {
-      return res.status(503).json({ error: "Resume parsing needs a valid GEMINI_API_KEY in server .env." });
-    }
-    next(err);
+    return res.status(400).json({ error: msg });
   }
 });
 
+/**
+ * @route   GET /api/resume/latest/review
+ * @desc    Fetch ATS review and open-source GitHub assessments
+ * @access  Private
+ */
 app.get("/api/resume/latest/review", authenticate, async (req, res, next) => {
   try {
     const check = await query("SELECT raw_json FROM resumes WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1", [req.user.id]);
@@ -230,6 +271,7 @@ app.get("/api/resume/latest/review", authenticate, async (req, res, next) => {
       const uRes = await query("SELECT github_url FROM users WHERE id = $1", [req.user.id]);
       const githubUrl = uRes.rows[0]?.github_url;
       if (githubUrl) {
+        // Fetch top repositories ordered by star count
         const repoRes = await query("SELECT repo_name, description, languages, stars FROM github_repos WHERE user_id = $1 ORDER BY stars DESC LIMIT 10", [req.user.id]);
         if (repoRes.rows.length > 0) {
           const { analyzeGithubProfile } = require("./groq");
@@ -244,15 +286,22 @@ app.get("/api/resume/latest/review", authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/**
+ * @route   POST /api/sessions
+ * @desc    Create new interactive interview session
+ * @access  Private
+ */
 app.post("/api/sessions", authenticate, async (req, res, next) => {
   try {
     const { resumeId, targetRole, githubUrl } = req.body || {};
     if (!resumeId || !targetRole) return res.status(400).json({ error: "resumeId and targetRole required" });
     const check = await query("SELECT id FROM resumes WHERE id = $1 AND user_id = $2", [resumeId, req.user.id]);
     if (!check.rows.length) return res.status(404).json({ error: "Resume not found" });
+    
     if (githubUrl) {
       await query("UPDATE users SET github_url = $1 WHERE id = $2", [githubUrl, req.user.id]);
       try {
+        // Index public repository text files into vector collections asynchronously
         await indexGithubRepos(req.user.id, githubUrl);
       } catch (e) {
         console.warn("[RAG] Indexing failed:", e.message);
@@ -268,6 +317,11 @@ app.post("/api/sessions", authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/**
+ * @route   GET /api/sessions
+ * @desc    Get session list history
+ * @access  Private
+ */
 app.get("/api/sessions", authenticate, async (req, res, next) => {
   try {
     const r = await query(
@@ -279,6 +333,11 @@ app.get("/api/sessions", authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/**
+ * @route   GET /api/sessions/:id
+ * @desc    Get details for a specific session
+ * @access  Private
+ */
 app.get("/api/sessions/:id", authenticate, async (req, res, next) => {
   try {
     const sid = req.params.id;
@@ -301,6 +360,11 @@ app.get("/api/sessions/:id", authenticate, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+/**
+ * @route   POST /api/sessions/:id/finalize
+ * @desc    Conclude an interview session, aggregate final marks, and trace gaps
+ * @access  Private
+ */
 app.post("/api/sessions/:id/finalize", authenticate, async (req, res, next) => {
   try {
     const sid = req.params.id;
@@ -310,8 +374,12 @@ app.post("/api/sessions/:id/finalize", authenticate, async (req, res, next) => {
     );
     if (!s.rows.length) return res.status(404).json({ error: "Not found" });
     const session = s.rows[0];
+    
+    // Aggregate scores from individual question answers
     const scores = await generateReport(sid);
+    // Map missing domain competencies using Groq
     const gaps = await generateKnowledgeGapAnalysis(sid, session.target_role || "Engineer");
+    
     await query(
       `UPDATE interview_sessions
        SET status = 'completed', overall_score = $1, technical_score = $2, comm_score = $3,

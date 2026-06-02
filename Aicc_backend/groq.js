@@ -1,10 +1,30 @@
 "use strict";
+/**
+ * Groq LLM API Service Integration
+ * 
+ * Provides wrappers for chat completions powered by Groq (defaulting to llama-3.3-70b-versatile).
+ * Responsible for:
+ * 1. Selecting and delivering technical questions based on candidate resumes and progress.
+ * 2. Graded evaluation of individual answers for completeness and technical accuracy.
+ * 3. Deep-dive gap analysis reports over complete conversation transcripts.
+ * 4. Structuring ATS resume scoring matrices.
+ * 5. Parsing GitHub metadata arrays to extract developer summaries.
+ */
+
 const Groq = require("groq-sdk");
 const { retrieveContext } = require("./rag");
 
+// Primary model identifier for text generation tasks
 const GROQ_MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
 
 let groqClient;
+
+/**
+ * Lazy initializer for Groq SDK Client connection.
+ * Checks for API key presence in environment variables.
+ * 
+ * @returns {Groq} Groq SDK Client instance
+ */
 function getGroq() {
   const key = process.env.GROQ_API_KEY?.trim();
   if (!key) {
@@ -16,7 +36,7 @@ function getGroq() {
   return groqClient;
 }
 
-// Interview question topics mapped to roles
+// Maps candidate target roles to specific structured interview topics
 const TOPIC_MAP = {
   "Backend Engineer": ["System Design", "Databases", "APIs & Web", "Distributed Systems", "Concurrency", "Behavioral"],
   "ML Engineer": ["Machine Learning", "Deep Learning", "MLOps", "Python & Data", "System Design", "Behavioral"],
@@ -25,6 +45,13 @@ const TOPIC_MAP = {
   "Data Scientist": ["Statistics", "Machine Learning", "SQL & Data Wrangling", "Python", "Visualization", "Behavioral"],
 };
 
+/**
+ * Returns a topic checklist matching the job description keyword.
+ * Falls back to general engineering topics if the role is not explicitly mapped.
+ * 
+ * @param {string} role - The candidate's target job title
+ * @returns {string[]} Ordered list of assessment topics
+ */
 function getTopicsForRole(role) {
   for (const [key, topics] of Object.entries(TOPIC_MAP)) {
     if (role.toLowerCase().includes(key.toLowerCase())) return topics;
@@ -32,6 +59,12 @@ function getTopicsForRole(role) {
   return ["Technical Skills", "Problem Solving", "System Design", "Communication", "Teamwork", "Behavioral"];
 }
 
+/**
+ * Generates the initial interview question customized to the candidate's resume/experience.
+ * 
+ * @param {Object} sessionContext - Session parameter state (role, parsed resume details, candidate name)
+ * @returns {Promise<Object>} Output containing generated question text and the corresponding topic
+ */
 async function generateFirstQuestion(sessionContext) {
   const { targetRole, resumeJson, userName } = sessionContext;
   const topics = getTopicsForRole(targetRole);
@@ -64,6 +97,13 @@ Return ONLY the question text, nothing else.`;
   };
 }
 
+/**
+ * Generates subsequent interview questions contextually matching previous conversation turns.
+ * Includes RAG search retrievals from indexed GitHub repo README contents to inject hyper-specific questions.
+ * 
+ * @param {Object} sessionContext - Full context including user IDs, past dialogue history, and active question numbers
+ * @returns {Promise<Object>} Next question text and topic
+ */
 async function generateFollowUpQuestion(sessionContext) {
   const { sessionId, userId, targetRole, resumeJson, conversationHistory, currentTopic, questionNumber } = sessionContext;
 
@@ -113,6 +153,16 @@ ${ragContext}`;
   };
 }
 
+/**
+ * Conducts graded assessment of a single candidate answer.
+ * Calculates verbal pace/WPM metrics, checks filler word frequency, and queries the LLM for grading.
+ * 
+ * @param {string} question - Question presented to candidate
+ * @param {string} answer - Raw spoken/written transcript answer
+ * @param {string} topic - Current topic of assessment
+ * @param {string} targetRole - Job role
+ * @returns {Promise<Object>} Graded results containing score, suggestions, and word counts
+ */
 async function evaluateAnswer(question, answer, topic, targetRole) {
   if (!answer || answer.trim().length < 10) {
     return { score: 0, feedback: "No substantive answer provided.", fillerWords: [] };
@@ -176,6 +226,14 @@ Return ONLY valid JSON:
   }
 }
 
+/**
+ * Synthesizes completed interview logs to extract knowledge gaps.
+ * 
+ * @param {string} sessionId - Session ID UUID
+ * @param {string} targetRole - Job role
+ * @param {Array} qaLog - Array of questions, answers, and scores
+ * @returns {Promise<Array>} List of gap profiles including severity levels and study suggestions
+ */
 async function generateKnowledgeGaps(sessionId, targetRole, qaLog) {
   if (!qaLog || qaLog.length === 0) return [];
 
@@ -215,6 +273,13 @@ Identify 4-6 distinct gaps. Order by severity (high first).`;
   }
 }
 
+/**
+ * Conducts a strict ATS parser-based resume audit.
+ * Identifies strengths, growth areas, missing keywords, and optimizes low-impact bullet points with metrics.
+ * 
+ * @param {Object} resumeJson - Parsed resume details
+ * @returns {Promise<Object>} Review report payload
+ */
 async function generateResumeReview(resumeJson) {
   if (!resumeJson || Object.keys(resumeJson).length === 0) {
     return { score: 0, strengths: [], improvements: ["No resume data found"], missingKeywords: [] };
@@ -262,6 +327,12 @@ DO NOT output placeholder values like "<actionable improvement 1>" or "<strength
   }
 }
 
+/**
+ * Assesses open-source footprint based on the user's top GitHub repository metadata.
+ * 
+ * @param {Array} repos - List of repository parameters (names, descriptions, languages, star count)
+ * @returns {Promise<Object>} Output feedback containing score, summary, and lists of strengths/weaknesses
+ */
 async function analyzeGithubProfile(repos) {
   if (!repos || repos.length === 0) {
     return { score: 0, summary: "No public repositories found.", strengths: [], areas_for_growth: [] };

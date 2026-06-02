@@ -1,9 +1,27 @@
 "use strict";
+/**
+ * Gemini AI Resume Parser Integration
+ * 
+ * Interacts with the Google Generative AI API (gemini-2.0-flash by default) to parse uploaded PDF resumes.
+ * key responsibilities:
+ * 1. Read files and convert binary data into base64 format payloads.
+ * 2. Prompt the generative model with a structured JSON schema constraint.
+ * 3. Sanitize AI markdown responses (extracting raw JSON content by stripping markdown fences).
+ * 4. Parse the output into a structured candidate profile.
+ */
+
 const fs = require("fs");
 const path = require("path");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 let genAI;
+
+/**
+ * Lazy initializer for Google Generative AI client connection.
+ * Checks for API key presence in environment variables.
+ * 
+ * @returns {GoogleGenerativeAI} Google Generative AI SDK client
+ */
 function getClient() {
   const key = process.env.GEMINI_API_KEY?.trim();
   if (!key) {
@@ -13,6 +31,7 @@ function getClient() {
   return genAI;
 }
 
+// System prompt defining strict guidelines and JSON structure expectations for parsing
 const RESUME_PARSE_PROMPT = `
 You are a resume parser. Extract ALL information from the resume PDF and return ONLY valid JSON.
 No markdown, no explanation — just the JSON object.
@@ -55,15 +74,23 @@ Required schema:
 }
 `;
 
+/**
+ * Reads a PDF file, submits it along with a parsing schema to Gemini, and returns parsed JSON.
+ * 
+ * @param {string} filePath - Absolute path to the uploaded resume PDF
+ * @returns {Promise<Object>} Formatted JSON payload containing structured resume details
+ */
 async function parseResumeWithGemini(filePath) {
   try {
     const client = getClient();
     const modelName = process.env.GEMINI_MODEL || "gemini-2.0-flash";
     const model = client.getGenerativeModel({ model: modelName });
 
+    // Read PDF file synchronously and format into base64 payload
     const fileData = fs.readFileSync(filePath);
     const base64Data = fileData.toString("base64");
 
+    // Query generative model passing the base64 object and schema constraints
     const result = await model.generateContent([
       {
         inlineData: {
@@ -75,7 +102,8 @@ async function parseResumeWithGemini(filePath) {
     ]);
 
     const responseText = result.response.text().trim();
-    // Strip any accidental markdown code fences
+    
+    // Strip any accidental markdown code fences inserted by the model
     const cleaned = responseText.replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim();
     const parsed = JSON.parse(cleaned);
 
@@ -83,18 +111,7 @@ async function parseResumeWithGemini(filePath) {
     return parsed;
   } catch (err) {
     console.error("[Gemini] Resume parsing failed:", err.message);
-    // Return minimal fallback so the upload doesn't fail entirely
-    return {
-      name: "Unknown",
-      email: "",
-      skills: [],
-      experience: [],
-      projects: [],
-      education: [],
-      certifications: [],
-      raw_text: "",
-      parse_error: err.message,
-    };
+    throw err;
   }
 }
 

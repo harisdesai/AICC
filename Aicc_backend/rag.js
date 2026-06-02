@@ -1,17 +1,44 @@
 "use strict";
+/**
+ * RAG (Retrieval-Augmented Generation) Service Layer
+ * 
+ * This service manages the repository documentation chunking and search pipeline.
+ * It is responsible for:
+ * 1. Synchronizing user GitHub repositories with ChromaDB vector store.
+ * 2. Splitting README content into overlapping blocks for high-granularity searches.
+ * 3. Embedding and storing repository chunks with custom metadata scopes.
+ * 4. Querying local vector stores to retrieve context matching the candidate's conversation.
+ */
+
 const axios = require("axios");
 const { ChromaClient } = require("chromadb");
 const { query } = require("../db/connection");
 
 let chromaClient;
+
+/**
+ * Lazy initializer for ChromaDB client connectivity.
+ * 
+ * @returns {ChromaClient} Connected Chroma client instance
+ */
 function getChroma() {
   if (!chromaClient) chromaClient = new ChromaClient({ path: process.env.CHROMA_URL || "http://localhost:8000" });
   return chromaClient;
 }
 
+// ChromaDB collection identifier for repository index
 const COLLECTION_NAME = "aicc_repo_chunks";
-const CHUNK_SIZE = 500; // chars
 
+// Maximum length of characters per text snippet
+const CHUNK_SIZE = 500;
+
+/**
+ * Splits input text into smaller, linear chunks for embeddings representation.
+ * 
+ * @param {string} text - Raw text to split
+ * @param {number} size - Target segment character size limit
+ * @returns {string[]} Array of sliced string pieces
+ */
 function chunkText(text, size = CHUNK_SIZE) {
   const chunks = [];
   for (let i = 0; i < text.length; i += size) {
@@ -21,6 +48,12 @@ function chunkText(text, size = CHUNK_SIZE) {
   return chunks;
 }
 
+/**
+ * Safely fetches or registers the primary vector collection in ChromaDB.
+ * Uses Cosine Similarity space calculation metrics.
+ * 
+ * @returns {Promise<Collection>} ChromaDB collection reference
+ */
 async function getOrCreateCollection() {
   const chroma = getChroma();
   return chroma.getOrCreateCollection({
@@ -29,6 +62,14 @@ async function getOrCreateCollection() {
   });
 }
 
+/**
+ * Pulls a candidate's public repositories from the GitHub REST API.
+ * Reads README data, chunks contents, and persists data to PostgreSQL and ChromaDB.
+ * 
+ * @param {string} userId - User UUID
+ * @param {string} githubUrl - Target candidate's GitHub profile link
+ * @returns {Promise<Object>} Summary counts of indexing actions
+ */
 async function indexGithubRepos(userId, githubUrl) {
   try {
     // Extract username from URL
@@ -38,6 +79,18 @@ async function indexGithubRepos(userId, githubUrl) {
 
     console.log(`[RAG] Fetching repos for ${username}`);
 
+    // Clear old repos and vector search chunks for this user to avoid duplicate or stale reports
+    await query("DELETE FROM github_repos WHERE user_id = $1", [userId]);
+    
+    let collection = null;
+    try {
+      collection = await getOrCreateCollection();
+      await collection.delete({ where: { userId: userId } });
+      console.log(`[RAG] Cleared existing ChromaDB chunks for user ${userId}`);
+    } catch (e) {
+      console.warn("[RAG] ChromaDB not available, skipping vector index cleanup:", e.message);
+    }
+
     // Fetch public repos from GitHub API
     const reposResp = await axios.get(
       `https://api.github.com/users/${username}/repos?per_page=30&sort=updated`,
@@ -45,7 +98,6 @@ async function indexGithubRepos(userId, githubUrl) {
     );
 
     const repos = reposResp.data.slice(0, 15); // Top 15
-    const collection = await getOrCreateCollection();
     const documents = [];
     const ids = [];
     const metadatas = [];
@@ -86,25 +138,39 @@ async function indexGithubRepos(userId, githubUrl) {
       }
     }
 
-    if (documents.length > 0) {
-      // ChromaDB upsert in batches of 100
-      for (let i = 0; i < documents.length; i += 100) {
-        await collection.upsert({
-          documents: documents.slice(i, i + 100),
-          ids: ids.slice(i, i + 100),
-          metadatas: metadatas.slice(i, i + 100),
-        });
+    if (collection && documents.length > 0) {
+      try {
+        // ChromaDB upsert in batches of 100
+        for (let i = 0; i < documents.length; i += 100) {
+          await collection.upsert({
+            documents: documents.slice(i, i + 100),
+            ids: ids.slice(i, i + 100),
+            metadatas: metadatas.slice(i, i + 100),
+          });
+        }
+        console.log(`[RAG] Indexed ${repos.length} repos, ${documents.length} chunks for user ${userId} in ChromaDB`);
+      } catch (e) {
+        console.warn("[RAG] Failed to upsert chunks into ChromaDB:", e.message);
       }
+    } else {
+      console.log(`[RAG] Indexed ${repos.length} repos in PostgreSQL (ChromaDB skipped/empty)`);
     }
 
-    console.log(`[RAG] Indexed ${repos.length} repos, ${documents.length} chunks for user ${userId}`);
-    return { reposIndexed: repos.length, chunksIndexed: documents.length };
+    return { reposIndexed: repos.length, chunksIndexed: collection ? documents.length : 0 };
   } catch (err) {
     console.error("[RAG] Indexing error:", err.message);
     throw err;
   }
 }
 
+/**
+ * Searches the user's vector embeddings index for documents matching the query parameter.
+ * 
+ * @param {string} userId - User UUID
+ * @param {string} queryText - User's verbal/written answer text
+ * @param {number} nResults - Number of matched context snippets to return
+ * @returns {Promise<Array>} Array of matching contexts with distances and metadata
+ */
 async function retrieveContext(userId, queryText, nResults = 3) {
   try {
     const collection = await getOrCreateCollection();
