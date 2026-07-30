@@ -2,7 +2,7 @@
 
 A modern full-stack application designed to conduct fully automated, AI-driven technical interviews. By leveraging advanced language models and real-time audio analysis, AICC evaluates a candidate based on their resume, their GitHub activity, and their real-time responses to dynamic technical questions.
 
-![AICC Overview](placeholder.png) <!-- Feel free to add an actual project image here -->
+![AICC Overview](image.png) <!-- Feel free to add an actual project image here -->
 
 ## ✨ Features
 
