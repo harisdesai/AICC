@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS interview_sessions (
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   resume_id UUID REFERENCES resumes(id),
   target_role VARCHAR(100),
+  difficulty VARCHAR(32) DEFAULT 'medium',
   status VARCHAR(32) DEFAULT 'active',
   overall_score NUMERIC,
   technical_score NUMERIC,

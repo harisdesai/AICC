@@ -5,19 +5,23 @@ import api from "../lib/api";
 import { useInterviewSocket } from "../hooks/useInterviewSocket";
 import { useMicrophone } from "../hooks/useMicrophone";
 import { useEmotionDetection } from "../hooks/useEmotionDetection";
+import { useTTS } from "../hooks/useTTS";
+import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
+import { useAudioRecorder } from "../hooks/useAudioRecorder";
 import { Button, Card, Tag, Spinner } from "../components/ui";
 import { LineChart, Line, ResponsiveContainer, XAxis, YAxis, CartesianGrid } from "recharts";
 
 /**
  * Interactive React Workspace Component for Live Interviews.
  * 
- * Sets up camera feed, real-time voice capturing, streaming transcription,
- * live facial expressions metrics tracking, and question-answer sequences.
+ * Sets up camera feed, real-time voice capturing (ElevenLabs Scribe STT), AI voice synthesis (Indian Accent TTS),
+ * live facial expressions metrics tracking, difficulty levels (Easy, Medium, Hard), and question-answer sequences.
  */
 export default function InterviewPage() {
   const { sessionId } = useParams();
   const navigate = useNavigate();
   const token = useAuthStore((s) => s.token);
+  const user = useAuthStore((s) => s.user);
   const videoRef = useRef(null);
 
   // Core loading and session states
@@ -38,13 +42,81 @@ export default function InterviewPage() {
   const [latestEmotion, setLatestEmotion] = useState({ neutral: 1, happy: 0, sad: 0, fearful: 0, surprised: 0, disgusted: 0, angry: 0 });
   const [timerSeconds, setTimerSeconds] = useState(0);
 
+  // Text-To-Speech (AI Interviewer Voice - Default Indian Accent) Hook
+  const {
+    speak,
+    stop: stopTTS,
+    repeatLast,
+    toggleMute: toggleMuteTTS,
+    isSpeaking,
+    isMuted: ttsMuted,
+    accent,
+    setAccent,
+    availableAccents,
+  } = useTTS();
+
+  // ElevenLabs Audio Recorder & STT Hook
+  const { recording: isRecordingAudio, transcribing: isTranscribingAudio, startRecording, stopRecording } = useAudioRecorder();
+
+  // Browser Native Speech-To-Text (Interim Preview) Hook
+  const {
+    transcript: sttTranscript,
+    interimTranscript,
+    fullTranscript,
+    listening: sttListening,
+    startListening: startSTT,
+    stopListening: stopSTT,
+    resetTranscript,
+  } = useSpeechRecognition({
+    onTranscriptChange: (text) => {
+      if (text) {
+        setTextAnswer(text);
+      }
+    },
+  });
+
   /**
-   * Dispatches text input to the active websocket as a fallback answer mechanism.
+   * Dispatches spoken or typed answer to the active websocket for evaluation.
    */
-  const handleTextSubmit = () => {
-    if (!textAnswer.trim()) return;
-    sendRef.current("text_answer", { text: textAnswer.trim() });
+  const handleAnswerSubmit = async () => {
+    stopSTT();
+    stopTTS();
+    stopMic();
+
+    let elText = "";
+    if (isRecordingAudio) {
+      elText = await stopRecording();
+    }
+
+    const finalAns = textAnswer.trim() || elText.trim() || fullTranscript.trim() || partial.trim();
+    if (!finalAns) return;
+
+    sendRef.current("text_answer", { text: finalAns });
     setTextAnswer("");
+    resetTranscript();
+    setPartial("");
+  };
+
+  /**
+   * Toggles active voice recording / ElevenLabs speech recognition session.
+   */
+  const handleMicToggle = async () => {
+    if (sttListening || isRecordingAudio || micActive) {
+      stopSTT();
+      stopMic();
+      const elText = await stopRecording();
+      if (elText) {
+        setTextAnswer((prev) => (prev ? `${prev} ${elText}` : elText));
+      }
+    } else {
+      stopTTS(); // Stop AI voice when candidate speaks
+      resetTranscript();
+      startSTT();
+      startMic();
+      if (mediaStream) {
+        startRecording(mediaStream);
+      }
+    }
   };
 
   // Fetch session parameters on mount
@@ -141,6 +213,7 @@ export default function InterviewPage() {
       sendRef.current("start_session", {
         sessionId,
         targetRole: sessionPayload.session.target_role,
+        difficulty: sessionPayload.session.difficulty || "medium",
         resumeJson: sessionPayload.resume?.raw_json || {},
       });
       setWsReady(true);
@@ -150,20 +223,37 @@ export default function InterviewPage() {
       setErr(msg.message || "Auth failed");
       return;
     }
-    // New question received: update DOM question display
+    // New question received: update DOM question display and read out loud via TTS
     if (msg.type === "question") {
       setQuestion(msg);
       setPartial("");
+      setTextAnswer("");
+      resetTranscript();
+
+      // Read question out loud with greeting on Question #1
+      const userName = user?.name || sessionPayload?.resume?.raw_json?.name || "Candidate";
+      const targetRole = sessionPayload?.session?.target_role || "Engineering";
+      const difficulty = (sessionPayload?.session?.difficulty || "medium").toUpperCase();
+      
+      let ttsMessage = "";
+      if (msg.questionNumber === 1) {
+        ttsMessage = `Hello ${userName}, welcome to your ${difficulty} level interview for the ${targetRole} position. Let's get started with your first question: ${msg.text}`;
+      } else {
+        ttsMessage = `Question ${msg.questionNumber}: ${msg.text}`;
+      }
+      speak(ttsMessage);
       return;
     }
     // Partial real-time voice transcription
     if (msg.type === "transcript_partial") {
       setPartial(msg.text || "");
+      if (msg.text) setTextAnswer(msg.text);
       return;
     }
     // Final transcription block completed
     if (msg.type === "transcript_final") {
       setPartial("");
+      if (msg.text) setTextAnswer((prev) => prev ? `${prev} ${msg.text}` : msg.text);
       return;
     }
     // Intermediate question answer grading
@@ -184,7 +274,7 @@ export default function InterviewPage() {
     if (msg.type === "error") {
       setErr(msg.message || "Server error");
     }
-  }, [sessionPayload, sessionId, navigate]);
+  }, [sessionPayload, sessionId, navigate, speak, resetTranscript, user]);
 
   const sendRef = useRef(() => {});
   // Initialize interview websocket connector
@@ -245,6 +335,9 @@ export default function InterviewPage() {
    * Concludes the interview manually.
    */
   const endSession = async () => {
+    stopSTT();
+    stopTTS();
+    stopRecording();
     stopMic();
     disconnect();
     try {
@@ -264,7 +357,7 @@ export default function InterviewPage() {
   };
   const domE = getDominantEmotion();
 
-  // Mock speaking pace trace array
+  // Speaking pace trace array
   const wpmData = [
     { name: 'Q1', value: 128 }, { name: 'Q2', value: 145 }, { name: 'Q3', value: 142 },
     { name: 'Q4', value: 160 }, { name: 'Q5', value: 138 }, { name: 'Q6', value: 142 },
@@ -289,15 +382,24 @@ export default function InterviewPage() {
 
   // Centered setup view displayed if interview has NOT started
   if (!interviewStarted) {
+    const diff = sessionPayload?.session?.difficulty || "medium";
     return (
       <div style={{ minHeight: "100vh", background: "var(--bg)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-        <Card style={{ padding: 48, maxWidth: 500, width: "100%", textAlign: "center" }}>
-          <div style={{ fontSize: 24, fontWeight: 600, marginBottom: 16, fontFamily: "DM Serif Display, serif" }}>Ready to begin?</div>
-          <p style={{ color: "var(--text2)", marginBottom: 32, lineHeight: 1.6 }}>
-            Click below to initialize your microphone context and connect to the AI Engine. Please ensure you are in a quiet room and your camera is positioned well.
+        <Card style={{ padding: 48, maxWidth: 520, width: "100%", textAlign: "center" }}>
+          <div style={{ fontSize: 26, fontWeight: 600, marginBottom: 12, fontFamily: "DM Serif Display, serif" }}>Ready for your AI Interview?</div>
+          <div style={{ marginBottom: 16 }}>
+            <Tag variant={diff === "easy" ? "green" : diff === "hard" ? "amber" : "accent"}>
+              {diff.toUpperCase()} DIFFICULTY
+            </Tag>
+          </div>
+          <p style={{ color: "var(--text2)", marginBottom: 24, lineHeight: 1.6 }}>
+            Click below to initialize your camera and microphone. The AI Interviewer will greet you with an Indian Accent, read technical questions, and transcribe your spoken responses via ElevenLabs Scribe.
           </p>
-          <Button size="lg" onClick={() => { setInterviewStarted(true); setTimeout(startMic, 500); }} style={{ width: "100%" }}>
-            Start Interview
+          <div style={{ display: "flex", gap: 12, justifyContent: "center", marginBottom: 32, fontSize: 13, color: "var(--text3)" }}>
+            <span>🇮🇳 Indian Accent TTS</span> · <span>🎙️ ElevenLabs Scribe STT</span>
+          </div>
+          <Button size="lg" onClick={() => { setInterviewStarted(true); setTimeout(handleMicToggle, 500); }} style={{ width: "100%" }}>
+            Start Interview Session
           </Button>
           <Button variant="ghost" style={{ marginTop: 16, width: "100%" }} onClick={() => navigate("/dashboard")}>Cancel</Button>
         </Card>
@@ -305,14 +407,27 @@ export default function InterviewPage() {
     );
   }
 
+  const isListeningActive = isRecordingAudio || sttListening || micActive;
+  const currentDiff = sessionPayload?.session?.difficulty || "medium";
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: "var(--bg)", overflow: "hidden" }}>
       {/* Top Nav */}
       <nav style={{ padding: "16px 24px", borderBottom: "1px solid var(--border)", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "space-between", height: 65 }}>
-        <div style={{ fontFamily: "DM Serif Display, serif", fontSize: 18 }}>
-          AI<span style={{ color: "var(--accent)" }}>CC</span> — <span style={{ fontSize: 14, color: "var(--text2)", fontFamily: "Outfit, sans-serif", fontWeight: 400 }}>{sessionPayload?.session?.target_role || "Interview Session"}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ fontFamily: "DM Serif Display, serif", fontSize: 18 }}>
+            AI<span style={{ color: "var(--accent)" }}>CC</span> — <span style={{ fontSize: 14, color: "var(--text2)", fontFamily: "Outfit, sans-serif", fontWeight: 400 }}>{sessionPayload?.session?.target_role || "Interview Session"}</span>
+          </div>
+          <Tag variant={currentDiff === "easy" ? "green" : currentDiff === "hard" ? "amber" : "accent"}>
+            {currentDiff.toUpperCase()}
+          </Tag>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          {isSpeaking && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, background: "var(--accent-dim)", color: "var(--accent2)", padding: "4px 10px", borderRadius: 20 }}>
+              <span className="pulse">🔊</span> AI Interviewer Speaking...
+            </div>
+          )}
           <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: "var(--green)" }}>
             <div style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--green)", animation: "pulse 2s infinite" }}></div> Live
           </div>
@@ -346,19 +461,31 @@ export default function InterviewPage() {
               </div>
             </div>
 
-            {/* Audio Waveform Panel */}
+            {/* Audio Waveform & Speech Status Panel */}
             <div style={{ flex: 1, background: "var(--bg3)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: 20, display: "flex", flexDirection: "column", gap: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div style={{ fontSize: 12, color: "var(--text3)", textTransform: "uppercase", letterSpacing: "1px" }}>Live Transcription — AssemblyAI</div>
-                <div style={{ fontSize: 12, color: "var(--text3)" }}>~WPM <span style={{ color: "var(--text)" }}>142</span></div>
+                <div style={{ fontSize: 12, color: "var(--text3)", textTransform: "uppercase", letterSpacing: "1px", display: "flex", alignItems: "center", gap: 8 }}>
+                  <span>ElevenLabs Scribe STT</span>
+                  {isListeningActive && <Tag variant="green">Recording Live</Tag>}
+                  {isTranscribingAudio && <Tag variant="amber">Transcribing Audio...</Tag>}
+                </div>
+                <div style={{ fontSize: 12, color: "var(--text3)" }}>Pace: <span style={{ color: "var(--text)" }}>Normal</span></div>
               </div>
               <div className="waveform">
                 {Array.from({ length: 30 }).map((_, i) => (
-                  <div key={i} className="wave-bar" style={{ animationDelay: `${i * 0.04}s`, height: `${Math.max(8, Math.random() * (micActive && partial ? 40 : 8))}px` }}></div>
+                  <div key={i} className="wave-bar" style={{ animationDelay: `${i * 0.04}s`, height: `${Math.max(8, Math.random() * (isListeningActive ? 40 : 8))}px` }}></div>
                 ))}
               </div>
               <div style={{ fontSize: 13, color: "var(--text2)", lineHeight: 1.7, background: "var(--bg4)", borderRadius: "var(--radius-sm)", padding: 12, flex: 1, fontStyle: "italic", overflowY: "auto", maxHeight: 80 }}>
-                {partial ? `"${partial}..."` : "Listening for speech..."}
+                {isTranscribingAudio ? (
+                  <span style={{ color: "var(--amber)", fontStyle: "normal", display: "flex", alignItems: "center", gap: 8 }}>
+                    <Spinner size={14} /> Transcribing speech with ElevenLabs Scribe STT...
+                  </span>
+                ) : isListeningActive ? (
+                  textAnswer || interimTranscript ? `"${textAnswer || interimTranscript}..."` : "Listening... Speak your answer now."
+                ) : (
+                  "Microphone paused. Click 'Speak Answer' below or type your response."
+                )}
               </div>
             </div>
           </div>
@@ -370,7 +497,7 @@ export default function InterviewPage() {
                 <div className="msg-avatar">🤖</div>
                 <div>
                   <div className="msg-bubble">
-                    <span style={{ color: "var(--green)", fontWeight: 600 }}>Score: {ev.score}</span>{" "}—{" "}{ev.feedback}
+                    <span style={{ color: "var(--green)", fontWeight: 600 }}>Score: {ev.score}/100</span>{" "}—{" "}{ev.feedback}
                   </div>
                 </div>
               </div>
@@ -379,18 +506,57 @@ export default function InterviewPage() {
             {question && (
               <div className="msg ai appear">
                 <div className="msg-avatar">🤖</div>
-                <div>
-                  <div className="msg-bubble">{question.text}</div>
-                  <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 4 }}>Topic: {question.topic}</div>
+                <div style={{ width: "100%" }}>
+                  <div className="msg-bubble" style={{ position: "relative", paddingRight: 40 }}>
+                    {question.text}
+                    {isSpeaking && (
+                      <span style={{ marginLeft: 10, fontSize: 12, color: "var(--accent)" }} className="pulse">
+                        🔊 Speaking...
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 6, fontSize: 11, color: "var(--text3)" }}>
+                    <span>Topic: {question.topic}</span>
+                    <span>·</span>
+                    <button
+                      onClick={repeatLast}
+                      style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: 11, padding: 0, textDecoration: "underline" }}
+                    >
+                      🔊 Replay Question
+                    </button>
+                    <span>·</span>
+                    <button
+                      onClick={toggleMuteTTS}
+                      style={{ background: "none", border: "none", color: ttsMuted ? "var(--amber)" : "var(--text3)", cursor: "pointer", fontSize: 11, padding: 0 }}
+                    >
+                      {ttsMuted ? "🔇 Voice Muted" : "🔈 Mute AI Voice"}
+                    </button>
+                    <span>·</span>
+                    <div style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                      <span>Accent:</span>
+                      <select
+                        value={accent}
+                        onChange={(e) => setAccent(e.target.value)}
+                        style={{ background: "var(--bg3)", border: "1px solid var(--border)", color: "var(--text)", borderRadius: 12, padding: "2px 6px", fontSize: 11, outline: "none", cursor: "pointer" }}
+                      >
+                        {availableAccents.map((acc) => (
+                          <option key={acc.id} value={acc.id}>{acc.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
             
-            {(partial || textAnswer) && (
+            {(textAnswer || interimTranscript || partial) && (
               <div className="msg user appear">
                 <div className="msg-avatar" style={{ fontSize: 12 }}>You</div>
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', width: '100%' }}>
-                  <div className="msg-bubble">{textAnswer || partial}</div>
+                  <div className="msg-bubble" style={{ background: "var(--accent-dim)", border: "1px solid var(--accent)" }}>
+                    {textAnswer || interimTranscript || partial}
+                  </div>
+                  <span style={{ fontSize: 10, color: "var(--text3)", marginTop: 4 }}>Drafting answer...</span>
                 </div>
               </div>
             )}
@@ -400,7 +566,7 @@ export default function InterviewPage() {
                 <div className="msg-avatar">🤖</div>
                 <div>
                   <div className="msg-bubble" style={{ color: "var(--text3)", fontStyle: "italic" }}>
-                    <Spinner size={14} /> Generating context...
+                    <Spinner size={14} /> Generating context and preparing question...
                   </div>
                 </div>
               </div>
@@ -408,28 +574,58 @@ export default function InterviewPage() {
           </div>
 
           {/* Controls Bar */}
-          <div style={{ display: "flex", alignItems: "center", gap: 12, flexShrink: 0, padding: 16, background: "var(--bg2)", borderTop: "1px solid var(--border)", borderRadius: "var(--radius)" }}>
-            <button 
-              onClick={() => micActive ? stopMic() : startMic()}
-              disabled={!mediaStream}
-              style={{ display: "flex", alignItems: "center", gap: 8, background: micActive ? "var(--red-dim)" : "var(--bg3)", border: "1px solid", borderColor: micActive ? "var(--red)" : "var(--border2)", color: micActive ? "var(--red)" : "var(--text2)", borderRadius: 40, padding: "10px 20px", fontSize: 14, cursor: "pointer", fontFamily: "Outfit, sans-serif", transition: "all 0.2s" }}
-            >
-              <span>{micActive ? "🔴" : "🎙️"}</span> {micActive ? "Mute Mic" : "Unmute Mic"}
-            </button>
-            <div style={{ flex: 1, display: "flex", gap: 10 }}>
-              <input 
-                type="text" 
-                value={textAnswer}
-                onChange={(e) => setTextAnswer(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") handleTextSubmit(); }}
-                placeholder="Fallback: Type answer..." 
-                style={{ flex: 1, padding: "10px 14px", borderRadius: 40, border: "1px solid var(--border)", background: "transparent", color: "var(--text)", fontSize: 13, outline: "none" }} 
-              />
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, flexShrink: 0, padding: 16, background: "var(--bg2)", borderTop: "1px solid var(--border)", borderRadius: "var(--radius)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <button 
+                onClick={handleMicToggle}
+                disabled={!mediaStream || isTranscribingAudio}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  background: isListeningActive ? "var(--red-dim)" : "var(--bg3)",
+                  border: "1px solid",
+                  borderColor: isListeningActive ? "var(--red)" : "var(--border2)",
+                  color: isListeningActive ? "var(--red)" : "var(--text)",
+                  borderRadius: 40,
+                  padding: "10px 20px",
+                  fontSize: 14,
+                  cursor: "pointer",
+                  fontFamily: "Outfit, sans-serif",
+                  transition: "all 0.2s",
+                  fontWeight: 500,
+                }}
+              >
+                <span>{isListeningActive ? "🔴" : "🎙️"}</span>
+                {isListeningActive ? "Stop & Transcribe" : "Speak Answer"}
+              </button>
+
+              <div style={{ flex: 1, display: "flex", gap: 10 }}>
+                <input 
+                  type="text" 
+                  value={textAnswer}
+                  onChange={(e) => setTextAnswer(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleAnswerSubmit(); }}
+                  placeholder="Speak or type your answer here..." 
+                  style={{ flex: 1, padding: "10px 16px", borderRadius: 40, border: "1px solid var(--border)", background: "var(--bg3)", color: "var(--text)", fontSize: 14, outline: "none" }} 
+                />
+              </div>
+
+              <Button
+                onClick={handleAnswerSubmit}
+                disabled={(!textAnswer.trim() && !fullTranscript.trim() && !partial.trim() && !isRecordingAudio) || isTranscribingAudio}
+                style={{ borderRadius: 40, padding: "10px 24px" }}
+              >
+                {isTranscribingAudio ? <Spinner size={14} /> : "Submit Answer →"}
+              </Button>
             </div>
-            <div style={{ fontSize: 12, color: "var(--text3)", whiteSpace: "nowrap" }}>
-              Q {question ? question.questionNumber : "?"} / {question ? (question.totalQuestions || 12) : 12}
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11, color: "var(--text3)", paddingLeft: 8, paddingRight: 8 }}>
+              <span>ElevenLabs Scribe STT powered voice recognition. Speak your response or type into the box.</span>
+              <span>Question {question ? question.questionNumber : "?"} of {question ? (question.totalQuestions || 12) : 12}</span>
             </div>
           </div>
+
         </div>
 
         {/* Sidebar */}

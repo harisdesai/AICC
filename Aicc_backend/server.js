@@ -110,9 +110,10 @@ app.get("/api/health/features", (req, res) => {
   });
 });
 
-// Seed admin
+// Seed admin & migrate schema
 (async () => {
   try {
+    await query(`ALTER TABLE interview_sessions ADD COLUMN IF NOT EXISTS difficulty VARCHAR(32) DEFAULT 'medium'`);
     const adminHash = await bcrypt.hash("admin123", 10);
     await query(`
       INSERT INTO users (id, name, email, password_hash)
@@ -120,7 +121,7 @@ app.get("/api/health/features", (req, res) => {
       ON CONFLICT (email) DO NOTHING
     `, [uuidv4(), adminHash]);
   } catch (err) {
-    console.error("[Server] Admin seed error:", err.message);
+    console.error("[Server] Startup migration error:", err.message);
   }
 })();
 
@@ -219,7 +220,7 @@ app.post("/api/resume", authenticate, upload.single("resume"), async (req, res, 
     }
 
     try { fs.unlinkSync(req.file.path); } catch (_) { /* ignore */ }
-    
+
     // --- Realtime Resume Evaluation ---
     // Perform technical quality audit on parsed resume details
     const { generateResumeReview } = require("./groq");
@@ -250,21 +251,21 @@ app.get("/api/resume/latest/review", authenticate, async (req, res, next) => {
   try {
     const check = await query("SELECT raw_json FROM resumes WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1", [req.user.id]);
     if (!check.rows.length) return res.status(404).json({ error: "No resume found. Please upload one first." });
-    
+
     let raw_json = {};
     try {
       if (check.rows[0].raw_json) {
         raw_json = typeof check.rows[0].raw_json === "string" ? JSON.parse(check.rows[0].raw_json) : check.rows[0].raw_json;
       }
-    } catch (_) {}
-    
+    } catch (_) { }
+
     let review = raw_json.review;
     if (!review) {
       // Fallback if not baked in yet
       const { generateResumeReview } = require("./groq");
       review = await generateResumeReview(raw_json);
     }
-    
+
     // --- Incorporate GitHub Profile Review ---
     let githubReview = null;
     try {
@@ -293,8 +294,12 @@ app.get("/api/resume/latest/review", authenticate, async (req, res, next) => {
  */
 app.post("/api/sessions", authenticate, async (req, res, next) => {
   try {
-    const { resumeId, targetRole, githubUrl } = req.body || {};
+    const { resumeId, targetRole, difficulty, githubUrl } = req.body || {};
     if (!resumeId || !targetRole) return res.status(400).json({ error: "resumeId and targetRole required" });
+    const diff = ["easy", "medium", "hard"].includes(String(difficulty).toLowerCase())
+      ? String(difficulty).toLowerCase()
+      : "medium";
+
     const check = await query("SELECT id FROM resumes WHERE id = $1 AND user_id = $2", [resumeId, req.user.id]);
     if (!check.rows.length) return res.status(404).json({ error: "Resume not found" });
     
@@ -309,11 +314,11 @@ app.post("/api/sessions", authenticate, async (req, res, next) => {
     }
     const id = uuidv4();
     await query(
-      `INSERT INTO interview_sessions (id, user_id, resume_id, target_role, status)
-       VALUES ($1, $2, $3, $4, 'active')`,
-      [id, req.user.id, resumeId, targetRole]
+      `INSERT INTO interview_sessions (id, user_id, resume_id, target_role, difficulty, status)
+       VALUES ($1, $2, $3, $4, $5, 'active')`,
+      [id, req.user.id, resumeId, targetRole, diff]
     );
-    res.json({ session: { id, target_role: targetRole, status: "active" } });
+    res.json({ session: { id, target_role: targetRole, difficulty: diff, status: "active" } });
   } catch (err) { next(err); }
 });
 
@@ -374,12 +379,12 @@ app.post("/api/sessions/:id/finalize", authenticate, async (req, res, next) => {
     );
     if (!s.rows.length) return res.status(404).json({ error: "Not found" });
     const session = s.rows[0];
-    
+
     // Aggregate scores from individual question answers
     const scores = await generateReport(sid);
     // Map missing domain competencies using Groq
     const gaps = await generateKnowledgeGapAnalysis(sid, session.target_role || "Engineer");
-    
+
     await query(
       `UPDATE interview_sessions
        SET status = 'completed', overall_score = $1, technical_score = $2, comm_score = $3,
@@ -483,7 +488,7 @@ app.post("/api/admin/users", authenticate, requireAdmin, async (req, res, next) 
     const bcrypt = require("bcrypt");
     const hash = await bcrypt.hash(password, 10);
     const { v4: uuidv4 } = require("uuid");
-    
+
     await query(`
       INSERT INTO users (id, name, email, password_hash) 
       VALUES ($1, $2, $3, $4)
@@ -496,7 +501,7 @@ app.put("/api/admin/users/:id", authenticate, requireAdmin, async (req, res, nex
   try {
     const { name, email } = req.body;
     if (!name || !email) return res.status(400).json({ error: "Name and email required" });
-    
+
     await query(`
       UPDATE users SET name = $1, email = $2 WHERE id = $3
     `, [name, email, req.params.id]);
@@ -507,7 +512,7 @@ app.put("/api/admin/users/:id", authenticate, requireAdmin, async (req, res, nex
 app.put("/api/admin/sessions/:id", authenticate, requireAdmin, async (req, res, next) => {
   try {
     const { target_role, status, overall_score } = req.body;
-    
+
     await query(`
       UPDATE interview_sessions 
       SET target_role = $1, status = $2, overall_score = $3 
@@ -529,7 +534,7 @@ app.put("/api/admin/configs/:key", authenticate, requireAdmin, async (req, res, 
     const key = req.params.key;
     const { value } = req.body;
     if (!key) return res.status(400).json({ error: "Key required" });
-    
+
     await query(`
       INSERT INTO system_configs (key, value, updated_at) 
       VALUES ($1, $2, NOW()) 

@@ -165,11 +165,6 @@ function connectAssemblyAI(state, ws) {
             // Send feedback update containing metrics
             send(ws, MSG.TRANSCRIPT_FINAL, { text: finalText, wpm, fillers: state.fillerTotals });
           }
-          
-          // If response length is significant, evaluate response (represents end-of-speech pause)
-          if (state.currentTranscript.trim().length > 20) {
-            await handleAnswerComplete(state, ws);
-          }
         } else if (msg.error) {
           console.error("[AssemblyAI] Error from API:", msg.error);
         }
@@ -221,7 +216,8 @@ async function handleAnswerComplete(state, ws) {
       state.currentQuestion,
       answerText,
       state.currentTopic,
-      state.targetRole
+      state.targetRole,
+      state.difficulty || "medium"
     );
 
     // Save answer content and evaluation scores into Database
@@ -289,6 +285,7 @@ async function generateAndSendQuestion(state, ws) {
         targetRole: state.targetRole,
         resumeJson: state.resumeJson,
         userName: state.userName,
+        difficulty: state.difficulty || "medium",
       });
     } else {
       // Subsequent questions evaluate responses and adapt topics contextually
@@ -300,6 +297,7 @@ async function generateAndSendQuestion(state, ws) {
         conversationHistory: state.conversationHistory,
         currentTopic: state.currentTopic,
         questionNumber: state.questionNumber,
+        difficulty: state.difficulty || "medium",
       });
     }
 
@@ -373,6 +371,7 @@ function setupWebSocket(server) {
           state.sessionId = msg.sessionId;
           state.targetRole = msg.targetRole || "Backend Engineer";
           state.resumeJson = msg.resumeJson || {};
+          state.difficulty = msg.difficulty || "medium";
           state.questionNumber = 0;
           state.conversationHistory = [];
 
@@ -384,6 +383,12 @@ function setupWebSocket(server) {
                 });
                 return;
               }
+              // Fetch difficulty from database if not explicitly passed
+              try {
+                const sRes = await query("SELECT difficulty FROM interview_sessions WHERE id = $1", [state.sessionId]);
+                if (sRes.rows[0]?.difficulty) state.difficulty = sRes.rows[0].difficulty;
+              } catch (_) {}
+
               await connectAssemblyAI(state, ws);
               await generateAndSendQuestion(state, ws);
             } catch (err) {
@@ -403,14 +408,17 @@ function setupWebSocket(server) {
           break;
         }
 
-        // Handles manual input submission if microphone fails
+        // Handles candidate answer submission (spoken or typed text)
         case MSG.TEXT_ANSWER: {
-          if (!state.sessionId || !msg.text) return;
-          state.currentTranscript = msg.text;
+          if (!state.sessionId) return;
+          if (msg.text) {
+            state.currentTranscript = msg.text;
+          }
+          if (!state.currentTranscript.trim()) return;
           try {
             await handleAnswerComplete(state, ws);
           } catch(e) {
-            console.error("[WS] Answer hander failed:", e);
+            console.error("[WS] Answer handler failed:", e);
             send(ws, MSG.ERROR, { message: "System error while processing answer." });
           }
           break;

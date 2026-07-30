@@ -59,16 +59,28 @@ function getTopicsForRole(role) {
   return ["Technical Skills", "Problem Solving", "System Design", "Communication", "Teamwork", "Behavioral"];
 }
 
+function getDifficultyInstruction(diff) {
+  const d = String(diff || "medium").toLowerCase();
+  if (d === "easy") {
+    return "DIFFICULTY LEVEL: EASY. Ask an entry-level, foundational technical question. Focus on core concepts, clear definitions, and accessible principles. Be encouraging.";
+  }
+  if (d === "hard") {
+    return "DIFFICULTY LEVEL: HARD. Ask an advanced FAANG / Staff / Senior-level technical question. Test deep system internals, concurrency, race conditions, edge cases, or extreme scalability bottlenecks. Be highly rigorous.";
+  }
+  return "DIFFICULTY LEVEL: MEDIUM. Ask a standard mid-level industry technical question covering practical architecture, code logic, and real-world scenarios.";
+}
+
 /**
- * Generates the initial interview question customized to the candidate's resume/experience.
+ * Generates the initial interview question customized to the candidate's resume/experience and difficulty level.
  * 
- * @param {Object} sessionContext - Session parameter state (role, parsed resume details, candidate name)
+ * @param {Object} sessionContext - Session parameter state (role, parsed resume details, candidate name, difficulty)
  * @returns {Promise<Object>} Output containing generated question text and the corresponding topic
  */
 async function generateFirstQuestion(sessionContext) {
-  const { targetRole, resumeJson, userName } = sessionContext;
+  const { targetRole, resumeJson, userName, difficulty = "medium" } = sessionContext;
   const topics = getTopicsForRole(targetRole);
   const firstTopic = topics[0];
+  const diffInstruction = getDifficultyInstruction(difficulty);
 
   const expStr = (resumeJson?.experience || []).map(e => `${e.role} at ${e.company} (${e.start}-${e.end})`).join(", ");
   const projStr = (resumeJson?.projects || []).map(p => p.name).join(", ");
@@ -79,8 +91,9 @@ Skills from resume: ${(resumeJson?.skills || resumeJson?.Skills || []).slice(0, 
 Experience: ${expStr}
 Projects: ${projStr}
 First topic to cover: ${firstTopic}
+${diffInstruction}
 
-Generate ONE opening interview question. Be specific — reference their skills or background where relevant.
+Generate ONE opening interview question tailored to the specified difficulty level. Be specific — reference their skills or background where relevant.
 Be conversational and professional. Keep it to 2-3 sentences max.
 Return ONLY the question text, nothing else.`;
 
@@ -101,11 +114,12 @@ Return ONLY the question text, nothing else.`;
  * Generates subsequent interview questions contextually matching previous conversation turns.
  * Includes RAG search retrievals from indexed GitHub repo README contents to inject hyper-specific questions.
  * 
- * @param {Object} sessionContext - Full context including user IDs, past dialogue history, and active question numbers
+ * @param {Object} sessionContext - Full context including user IDs, past dialogue history, active question numbers, difficulty
  * @returns {Promise<Object>} Next question text and topic
  */
 async function generateFollowUpQuestion(sessionContext) {
-  const { sessionId, userId, targetRole, resumeJson, conversationHistory, currentTopic, questionNumber } = sessionContext;
+  const { sessionId, userId, targetRole, resumeJson, conversationHistory, currentTopic, questionNumber, difficulty = "medium" } = sessionContext;
+  const diffInstruction = getDifficultyInstruction(difficulty);
 
   // RAG: retrieve relevant context from GitHub repos / resume embeddings
   let ragContext = "";
@@ -125,9 +139,11 @@ async function generateFollowUpQuestion(sessionContext) {
 
   const expStr = (resumeJson?.experience || []).map(e => `${e.role} at ${e.company} (${e.start}-${e.end})`).join(", ");
   
-  const systemPrompt = `You are an expert ${targetRole} interviewer. Your job:
+  const systemPrompt = `You are an expert ${targetRole} interviewer.
+${diffInstruction}
+Your job:
 1. Evaluate the candidate's last answer
-2. Ask ONE targeted follow-up question that either:
+2. Ask ONE targeted follow-up question matching the difficulty level that either:
    - Digs deeper into what they just said, OR
    - Transitions to a new topic: ${nextTopic}
 3. If they mentioned a specific tool/project, reference it by name
@@ -161,9 +177,10 @@ ${ragContext}`;
  * @param {string} answer - Raw spoken/written transcript answer
  * @param {string} topic - Current topic of assessment
  * @param {string} targetRole - Job role
+ * @param {string} difficulty - Session difficulty level (easy, medium, hard)
  * @returns {Promise<Object>} Graded results containing score, suggestions, and word counts
  */
-async function evaluateAnswer(question, answer, topic, targetRole) {
+async function evaluateAnswer(question, answer, topic, targetRole, difficulty = "medium") {
   if (!answer || answer.trim().length < 10) {
     return { score: 0, feedback: "No substantive answer provided.", fillerWords: [] };
   }
@@ -182,13 +199,16 @@ async function evaluateAnswer(question, answer, topic, targetRole) {
   // Estimate WPM assuming avg ~2 min answer
   const estimatedWpm = Math.round(words / 2);
 
+  const diffStr = String(difficulty || "medium").toUpperCase();
+
   const prompt = `You are evaluating a ${targetRole} interview answer.
+Difficulty Target: ${diffStr} (${diffStr === "EASY" ? "grade encouragingly for core understanding" : diffStr === "HARD" ? "grade strictly for senior level technical depth, edge cases, and architectural precision" : "grade with standard mid-level industry expectations"})
 
 Question: ${question}
 Topic: ${topic}
 Answer: ${answer}
 
-Score the answer 0-100 on technical accuracy and completeness.
+Score the answer 0-100 on technical accuracy and completeness for ${diffStr} level.
 Then provide 2-3 sentences of specific, actionable feedback.
 
 Return ONLY valid JSON:

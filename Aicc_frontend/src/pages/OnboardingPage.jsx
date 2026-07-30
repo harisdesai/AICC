@@ -11,6 +11,12 @@ const ROLES = [
   "Data Scientist",
 ];
 
+const DIFFICULTIES = [
+  { id: "easy", label: "🟢 Easy", desc: "Foundational & entry level" },
+  { id: "medium", label: "🟡 Medium", desc: "Standard practical systems" },
+  { id: "hard", label: "🔴 Hard", desc: "Staff / FAANG & deep internals" },
+];
+
 export default function OnboardingPage() {
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
@@ -18,6 +24,7 @@ export default function OnboardingPage() {
   const [resumeName, setResumeName] = useState("");
   const [uploading, setUploading] = useState(false);
   const [targetRole, setTargetRole] = useState(ROLES[0]);
+  const [difficulty, setDifficulty] = useState("medium");
   const [githubUrl, setGithubUrl] = useState("");
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
@@ -52,7 +59,7 @@ export default function OnboardingPage() {
   };
 
   const startSession = async (e) => {
-    e.preventDefault();
+    if (e && e.preventDefault) e.preventDefault();
     if (!resumeId) { setError("Upload a resume first"); return; }
     setError("");
     setCreating(true);
@@ -60,6 +67,7 @@ export default function OnboardingPage() {
       const { data } = await api.post("/sessions", {
         resumeId,
         targetRole,
+        difficulty,
         githubUrl: githubUrl.trim() || undefined,
       });
       navigate(`/interview/${data.session.id}`);
@@ -82,7 +90,7 @@ export default function OnboardingPage() {
           <div className="step-line" />
           <div className={`step ${step >= 2 ? "active" : "pending"}`}>
             <div className="step-dot">2</div>
-            <span style={{ fontSize: 13, color: step >= 2 ? "var(--text2)" : "var(--text3)" }}>Job Target</span>
+            <span style={{ fontSize: 13, color: step >= 2 ? "var(--text2)" : "var(--text3)" }}>Job & Level</span>
           </div>
           <div className="step-line" />
           <div className={`step pending`}>
@@ -93,7 +101,7 @@ export default function OnboardingPage() {
 
         <div className="appear delay-1" style={{ marginBottom: 40 }}>
           <h2 style={{ fontFamily: "DM Serif Display, serif", fontSize: 36, marginBottom: 12, letterSpacing: "-1px" }}>Set up your profile</h2>
-          <p style={{ color: "var(--text2)", fontSize: 15 }}>Upload your resume and link your professional profiles. AICC uses these to tailor every question to you.</p>
+          <p style={{ color: "var(--text2)", fontSize: 15 }}>Upload your resume, pick your target difficulty level, and link your developer profiles.</p>
         </div>
 
         {step === 1 && (
@@ -111,7 +119,7 @@ export default function OnboardingPage() {
                 <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
                   <Spinner size={40} />
                   <h3 style={{ fontSize: 16, fontWeight: 500, marginTop: 16, marginBottom: 8 }}>Parsing Resume...</h3>
-                  <p style={{ fontSize: 13, color: "var(--text3)" }}>Extracting skills and timeline with Gemini 2.5</p>
+                  <p style={{ fontSize: 13, color: "var(--text3)" }}>Extracting skills and timeline</p>
                 </div>
               ) : resumeId ? (
                 <>
@@ -136,6 +144,7 @@ export default function OnboardingPage() {
             <Card style={{ padding: 32, marginBottom: 32 }}>
               <form onSubmit={startSession} style={{ display: "flex", flexDirection: "column", gap: 24 }}>
                 
+                {/* Target Role */}
                 <div>
                   <p style={{ fontSize: 13, color: "var(--text3)", marginBottom: 12, textTransform: "uppercase", letterSpacing: "0.8px" }}>Target Role</p>
                   <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
@@ -157,6 +166,31 @@ export default function OnboardingPage() {
                   </div>
                 </div>
 
+                {/* Question Difficulty Selection */}
+                <div>
+                  <p style={{ fontSize: 13, color: "var(--text3)", marginBottom: 12, textTransform: "uppercase", letterSpacing: "0.8px" }}>Interview Difficulty</p>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+                    {DIFFICULTIES.map((d) => (
+                      <div
+                        key={d.id}
+                        onClick={() => setDifficulty(d.id)}
+                        style={{
+                          padding: "14px 16px",
+                          borderRadius: "var(--radius-sm)",
+                          border: difficulty === d.id ? "2px solid var(--accent)" : "1px solid var(--border2)",
+                          background: difficulty === d.id ? "var(--accent-dim)" : "var(--bg3)",
+                          cursor: "pointer",
+                          transition: "all 0.2s ease"
+                        }}
+                      >
+                        <div style={{ fontWeight: 600, fontSize: 14, color: difficulty === d.id ? "var(--accent2)" : "var(--text)" }}>{d.label}</div>
+                        <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 4 }}>{d.desc}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Developer Profiles */}
                 <div>
                   <p style={{ fontSize: 13, color: "var(--text3)", marginBottom: 12, textTransform: "uppercase", letterSpacing: "0.8px" }}>Professional Profiles</p>
                   <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
