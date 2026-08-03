@@ -9,7 +9,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "aicc-monorepo": "file:..",
     "axios": "^1.6.8",
     "clsx": "^2.1.1",
     "face-api.js": "^0.22.2",

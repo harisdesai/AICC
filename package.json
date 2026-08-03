@@ -6,7 +6,7 @@
     "client": "npm run dev --prefix Aicc_frontend",
     "dev": "node Aicc_backend/server.js",
     "db:apply": "node scripts/apply-schema.js",
-    "build:client": "npm run build --prefix Aicc_frontend",
+    "build:client": "cd Aicc_frontend && npm install && npm run build",
     "build": "npm run build:client",
     "start": "node Aicc_backend/server.js",
     "start:prod": "node Aicc_backend/server.js"
