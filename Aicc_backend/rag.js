@@ -91,10 +91,15 @@ async function indexGithubRepos(userId, githubUrl) {
       console.warn("[RAG] ChromaDB not available, skipping vector index cleanup:", e.message);
     }
 
+    const ghHeaders = { Accept: "application/vnd.github.v3+json" };
+    if (process.env.GITHUB_TOKEN?.trim()) {
+      ghHeaders.Authorization = `Bearer ${process.env.GITHUB_TOKEN.trim()}`;
+    }
+
     // Fetch public repos from GitHub API
     const reposResp = await axios.get(
       `https://api.github.com/users/${username}/repos?per_page=30&sort=updated`,
-      { headers: { Accept: "application/vnd.github.v3+json" }, timeout: 10000 }
+      { headers: ghHeaders, timeout: 10000 }
     );
 
     const repos = reposResp.data.slice(0, 15); // Top 15
@@ -106,7 +111,7 @@ async function indexGithubRepos(userId, githubUrl) {
       // Store repo record in DB
       const langs = {};
       try {
-        const langResp = await axios.get(repo.languages_url, { timeout: 5000 });
+        const langResp = await axios.get(repo.languages_url, { headers: ghHeaders, timeout: 5000 });
         Object.assign(langs, langResp.data);
       } catch (_) {}
 
@@ -114,7 +119,7 @@ async function indexGithubRepos(userId, githubUrl) {
       try {
         const readmeResp = await axios.get(
           `https://api.github.com/repos/${username}/${repo.name}/readme`,
-          { headers: { Accept: "application/vnd.github.v3.raw" }, timeout: 5000 }
+          { headers: { ...ghHeaders, Accept: "application/vnd.github.v3.raw" }, timeout: 5000 }
         );
         readmeText = readmeResp.data?.substring(0, 8000) || "";
       } catch (_) {}
