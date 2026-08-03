@@ -1,9 +1,9 @@
 import { useRef, useCallback, useEffect } from "react";
 
-// Dynamically resolve WebSocket endpoint based on protocol and environment
-const WS_URL = import.meta.env.DEV
+// Dynamically resolve WebSocket endpoint based on environment or protocol
+const WS_URL = import.meta.env.VITE_WS_URL || (import.meta.env.DEV
   ? "ws://localhost:5000/ws"
-  : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`;
+  : `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`);
 
 /**
  * Custom React hook managing browser WebSocket lifecycle.
