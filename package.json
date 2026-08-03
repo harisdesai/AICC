@@ -6,7 +6,7 @@
     "client": "npm run dev --prefix Aicc_frontend",
     "dev": "node Aicc_backend/server.js",
     "db:apply": "node scripts/apply-schema.js",
-    "build:client": "cd Aicc_frontend && npm install && npm run build",
+    "build:client": "cd Aicc_frontend && npm install && npx vite build",
     "build": "npm run build:client",
     "start": "node Aicc_backend/server.js",
     "start:prod": "node Aicc_backend/server.js"
@@ -30,5 +30,8 @@
     "ws": "^8.16.0",
     "zod": "^3.23.8",
     "pdf-parse": "^1.1.1"
+  },
+  "devDependencies": {
+    "vite": "^5.2.6"
   }
 }
