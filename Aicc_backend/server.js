@@ -25,7 +25,8 @@ const { query } = require("../db/connection");
 const { authenticate } = require("../middleware/auth");
 const { setupWebSocket } = require("./handler");
 const profileRouter = require("./profile");
-const { parseResumeWithGemini } = require("./gemini");
+const { parseResumeWithGemini, transcribeAudioWithGemini } = require("./gemini");
+const { transcribeAudioWithGroq } = require("./groq");
 const { indexGithubRepos } = require("./rag");
 const { generateReport, generateKnowledgeGapAnalysis } = require("./report");
 
@@ -186,6 +187,57 @@ app.get("/api/auth/me", authenticate, async (req, res, next) => {
 });
 
 app.use("/api/profile", profileRouter);
+
+/**
+ * @route   POST /api/stt
+ * @desc    Transcribe candidate spoken audio using Gemini (with automatic Groq Whisper fallback)
+ * @access  Public / Authenticated
+ */
+app.post("/api/stt", upload.single("audio"), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "No audio file provided" });
+  }
+
+  const filePath = req.file.path;
+  const mimeType = req.file.mimetype || "audio/webm";
+
+  try {
+    let transcript = "";
+    let provider = "gemini";
+
+    // Tier 1: Try Gemini STT first
+    try {
+      transcript = await transcribeAudioWithGemini(filePath, mimeType);
+    } catch (geminiErr) {
+      console.warn("[STT] Gemini transcription failed:", geminiErr.message);
+      console.log("[STT] Falling back to Groq Whisper...");
+
+      // Tier 2: Seamless fallback to Groq Whisper
+      try {
+        transcript = await transcribeAudioWithGroq(filePath, req.file.originalname || "recording.webm");
+        provider = "groq-whisper";
+        console.log("[STT] Groq Whisper fallback succeeded!");
+      } catch (fallbackErr) {
+        console.error("[STT] All STT transcription engines failed:", fallbackErr.message);
+        return res.status(500).json({
+          error: `Speech transcription failed. Gemini: ${geminiErr.message}. Fallback: ${fallbackErr.message}`,
+          transcript: "",
+        });
+      }
+    }
+
+    res.json({ transcript: transcript || "", provider });
+  } catch (err) {
+    console.error("[STT] Unexpected error during audio processing:", err);
+    res.status(500).json({ error: err.message || "Failed to process audio", transcript: "" });
+  } finally {
+    try {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    } catch (_) {}
+  }
+});
 
 /**
  * @route   POST /api/resume

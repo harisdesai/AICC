@@ -14,7 +14,7 @@ import { LineChart, Line, ResponsiveContainer, XAxis, YAxis, CartesianGrid } fro
 /**
  * Interactive React Workspace Component for Live Interviews.
  * 
- * Sets up camera feed, real-time voice capturing (ElevenLabs Scribe STT), AI voice synthesis (Indian Accent TTS),
+ * Sets up camera feed, real-time voice capturing (Gemini AI STT), AI voice synthesis (Indian Accent TTS),
  * live facial expressions metrics tracking, difficulty levels (Easy, Medium, Hard), and question-answer sequences.
  */
 export default function InterviewPage() {
@@ -55,7 +55,7 @@ export default function InterviewPage() {
     availableAccents,
   } = useTTS();
 
-  // ElevenLabs Audio Recorder & STT Hook
+  // Gemini AI Audio Recorder & STT Hook
   const { recording: isRecordingAudio, transcribing: isTranscribingAudio, startRecording, stopRecording } = useAudioRecorder();
 
   // Browser Native Speech-To-Text (Interim Preview) Hook
@@ -98,7 +98,7 @@ export default function InterviewPage() {
   };
 
   /**
-   * Toggles active voice recording / ElevenLabs speech recognition session.
+   * Toggles active voice recording / Gemini AI speech recognition session.
    */
   const handleMicToggle = async () => {
     if (sttListening || isRecordingAudio || micActive) {
@@ -393,10 +393,10 @@ export default function InterviewPage() {
             </Tag>
           </div>
           <p style={{ color: "var(--text2)", marginBottom: 24, lineHeight: 1.6 }}>
-            Click below to initialize your camera and microphone. The AI Interviewer will greet you with an Indian Accent, read technical questions, and transcribe your spoken responses via ElevenLabs Scribe.
+            Click below to initialize your camera and microphone. The AI Interviewer will greet you with an Indian Accent, read technical questions, and transcribe your spoken responses via Gemini AI STT.
           </p>
           <div style={{ display: "flex", gap: 12, justifyContent: "center", marginBottom: 32, fontSize: 13, color: "var(--text3)" }}>
-            <span>🇮🇳 Indian Accent TTS</span> · <span>🎙️ ElevenLabs Scribe STT</span>
+            <span>🇮🇳 Indian Accent TTS</span> · <span>🎙️ Gemini AI STT</span>
           </div>
           <Button size="lg" onClick={() => { setInterviewStarted(true); setTimeout(handleMicToggle, 500); }} style={{ width: "100%" }}>
             Start Interview Session
@@ -465,7 +465,7 @@ export default function InterviewPage() {
             <div style={{ flex: 1, background: "var(--bg3)", border: "1px solid var(--border)", borderRadius: "var(--radius)", padding: 20, display: "flex", flexDirection: "column", gap: 12 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div style={{ fontSize: 12, color: "var(--text3)", textTransform: "uppercase", letterSpacing: "1px", display: "flex", alignItems: "center", gap: 8 }}>
-                  <span>ElevenLabs Scribe STT</span>
+                  <span>Gemini AI STT</span>
                   {isListeningActive && <Tag variant="green">Recording Live</Tag>}
                   {isTranscribingAudio && <Tag variant="amber">Transcribing Audio...</Tag>}
                 </div>
@@ -479,7 +479,7 @@ export default function InterviewPage() {
               <div style={{ fontSize: 13, color: "var(--text2)", lineHeight: 1.7, background: "var(--bg4)", borderRadius: "var(--radius-sm)", padding: 12, flex: 1, fontStyle: "italic", overflowY: "auto", maxHeight: 80 }}>
                 {isTranscribingAudio ? (
                   <span style={{ color: "var(--amber)", fontStyle: "normal", display: "flex", alignItems: "center", gap: 8 }}>
-                    <Spinner size={14} /> Transcribing speech with ElevenLabs Scribe STT...
+                    <Spinner size={14} /> Transcribing speech with Gemini AI STT...
                   </span>
                 ) : isListeningActive ? (
                   textAnswer || interimTranscript ? `"${textAnswer || interimTranscript}..."` : "Listening... Speak your answer now."
@@ -621,7 +621,7 @@ export default function InterviewPage() {
             </div>
 
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 11, color: "var(--text3)", paddingLeft: 8, paddingRight: 8 }}>
-              <span>ElevenLabs Scribe STT powered voice recognition. Speak your response or type into the box.</span>
+              <span>Gemini AI STT powered voice recognition. Speak your response or type into the box.</span>
               <span>Question {question ? question.questionNumber : "?"} of {question ? (question.totalQuestions || 12) : 12}</span>
             </div>
           </div>

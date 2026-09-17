@@ -12,10 +12,7 @@
 
 const fs = require("fs");
 const pdfParse = require("pdf-parse");
-const Groq = require("groq-sdk");
-
-// LLM Model mapping
-const GROQ_MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
+const { createGroqChatCompletion, safeParseJson } = require("./groq");
 
 /**
  * Extracts and structures resume profiles from files.
@@ -67,11 +64,10 @@ async function parseResumeWithGroq(filePath) {
   if (!key) {
     throw new Error("GROQ_API_KEY is not set in server .env");
   }
-  const groq = new Groq({ apiKey: key });
 
-  // Prompt configuration specifying JSON formats
+  // Prompt configuration specifying JSON formats without echoing raw_text
   const prompt = `You are a resume parser. Extract ALL information from the resume raw text and return ONLY valid JSON.
-No markdown, no explanation — just the JSON object.
+No markdown, no explanation — just the JSON object. Do NOT include raw_text in your JSON output.
 
 Required schema:
 {
@@ -87,7 +83,7 @@ Required schema:
       "role": "string",
       "start": "string",
       "end": "string or Present",
-      "bullets": ["array of highly specific quantifiable achievement strings with extracted metric scopes"]
+      "bullets": ["array of achievement strings"]
     }
   ],
   "projects": [
@@ -96,7 +92,7 @@ Required schema:
       "description": "string",
       "tech_stack": ["array of specific libraries and frameworks"],
       "github_url": "string or null",
-      "quantifiable_impact": ["array of measurable impacts the project achieved"]
+      "quantifiable_impact": ["array of measurable impacts"]
     }
   ],
   "education": [
@@ -106,34 +102,25 @@ Required schema:
       "year": "string"
     }
   ],
-  "certifications": ["array or empty array"],
-  "raw_text": "full plain text of the resume"
+  "certifications": ["array or empty array"]
 }
 
 Resume Text:
-${rawText}
+${rawText.slice(0, 15000)}
 `;
 
-  const completion = await groq.chat.completions.create({
-    model: GROQ_MODEL,
+  const completion = await createGroqChatCompletion({
     messages: [{ role: "user", content: prompt }],
-    max_tokens: 2000,
+    response_format: { type: "json_object" },
+    max_tokens: 4096,
     temperature: 0.1,
   });
 
-  let responseText = completion.choices[0].message.content.trim();
-  
-  // Safely extract substring containing JSON delimiters to bypass system pre-texts
-  const firstBrace = responseText.indexOf('{');
-  const lastBrace = responseText.lastIndexOf('}');
-  if (firstBrace === -1 || lastBrace === -1) {
-    throw new Error("Groq response did not contain a valid JSON object.");
-  }
-  const cleaned = responseText.substring(firstBrace, lastBrace + 1);
-  const parsed = JSON.parse(cleaned);
+  const responseText = completion.choices[0].message.content.trim();
+  const parsed = safeParseJson(responseText);
 
-  // Ensure raw_text field remains populated
-  parsed.raw_text = parsed.raw_text || rawText.substring(0, 10000);
+  // Ensure raw_text field remains populated with actual text from the document
+  parsed.raw_text = parsed.raw_text || rawText.substring(0, 15000);
 
   return parsed;
 }

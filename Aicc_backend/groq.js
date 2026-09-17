@@ -11,11 +11,22 @@
  * 5. Parsing GitHub metadata arrays to extract developer summaries.
  */
 
+const fs = require("fs");
+const path = require("path");
 const Groq = require("groq-sdk");
 const { retrieveContext } = require("./rag");
 
-// Primary model identifier for text generation tasks
-const GROQ_MODEL = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
+// Candidate models in order of priority: user preference, robust large model, fast fallback models
+const FALLBACK_MODELS = [
+  process.env.GROQ_MODEL,
+  "openai/gpt-oss-120b",
+  "openai/gpt-oss-20b",
+  "qwen/qwen3.8-27b",
+  "llama-3.3-70b-versatile",
+].filter(Boolean);
+
+let activeGroqModel = FALLBACK_MODELS[0] || "openai/gpt-oss-120b";
+const GROQ_MODEL = activeGroqModel;
 
 let groqClient;
 
@@ -34,6 +45,123 @@ function getGroq() {
   }
   if (!groqClient) groqClient = new Groq({ apiKey: key });
   return groqClient;
+}
+
+/**
+ * Executes a chat completion with automatic model fallback in case of 404 (model_not_found).
+ * 
+ * @param {Object} params - Completion parameters (messages, max_tokens, temperature, etc.)
+ * @returns {Promise<Object>} Groq chat completion response
+ */
+async function createGroqChatCompletion(params) {
+  const groq = getGroq();
+  const modelsToTry = [
+    activeGroqModel,
+    ...FALLBACK_MODELS.filter((m) => m !== activeGroqModel),
+  ];
+
+  let lastErr = null;
+  for (const model of modelsToTry) {
+    try {
+      const res = await groq.chat.completions.create({
+        ...params,
+        model,
+      });
+      activeGroqModel = model;
+      return res;
+    } catch (err) {
+      lastErr = err;
+      const isModelNotFound =
+        err.status === 404 ||
+        err.code === "model_not_found" ||
+        (err.message && (err.message.includes("does not exist") || err.message.includes("model_not_found")));
+
+      if (isModelNotFound) {
+        console.warn(`[Groq] Model "${model}" unavailable (404/not found). Trying fallback model...`);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * Robust JSON parser that handles code fences, trims noise, and repairs unclosed structures.
+ * 
+ * @param {string} raw - Raw LLM string output
+ * @returns {Object} Parsed JSON object/array
+ */
+function safeParseJson(raw) {
+  if (!raw || typeof raw !== "string") throw new Error("Empty JSON input");
+  let text = raw.trim();
+  text = text.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/i, "").trim();
+
+  try {
+    return JSON.parse(text);
+  } catch (_) {}
+
+  const firstBrace = text.indexOf('{');
+  const lastBrace = text.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    try {
+      return JSON.parse(text.substring(firstBrace, lastBrace + 1));
+    } catch (_) {}
+  }
+
+  const firstBracket = text.indexOf('[');
+  const lastBracket = text.lastIndexOf(']');
+  if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+    try {
+      return JSON.parse(text.substring(firstBracket, lastBracket + 1));
+    } catch (_) {}
+  }
+
+  // Attempt structural repair for truncated JSON
+  const startIdx = (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) ? firstBrace : firstBracket;
+  if (startIdx === -1) throw new Error("No JSON object or array found in response");
+
+  let rep = text.substring(startIdx);
+  rep = rep.replace(/,\s*"[^"]*"?\s*:?\s*$/, "");
+  rep = rep.replace(/,\s*$/, "");
+
+  const stack = [];
+  let inString = false;
+  let escape = false;
+
+  for (let i = 0; i < rep.length; i++) {
+    const char = rep[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (char === '\\') {
+      escape = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+
+    if (char === '{') stack.push('}');
+    else if (char === '[') stack.push(']');
+    else if (char === '}' || char === ']') {
+      if (stack.length && stack[stack.length - 1] === char) {
+        stack.pop();
+      }
+    }
+  }
+
+  if (inString) rep += '"';
+  rep = rep.replace(/,\s*$/, "");
+
+  while (stack.length) {
+    rep += stack.pop();
+  }
+
+  return JSON.parse(rep);
 }
 
 // Maps candidate target roles to specific structured interview topics
@@ -97,9 +225,7 @@ Generate ONE opening interview question tailored to the specified difficulty lev
 Be conversational and professional. Keep it to 2-3 sentences max.
 Return ONLY the question text, nothing else.`;
 
-  const groq = getGroq();
-  const completion = await groq.chat.completions.create({
-    model: GROQ_MODEL,
+  const completion = await createGroqChatCompletion({
     messages: [{ role: "user", content: prompt }],
     max_tokens: 200,
     temperature: 0.7,
@@ -152,9 +278,7 @@ Your job:
 Candidate Experience: ${expStr}
 ${ragContext}`;
 
-  const groq = getGroq();
-  const completion = await groq.chat.completions.create({
-    model: GROQ_MODEL,
+  const completion = await createGroqChatCompletion({
     messages: [
       { role: "system", content: systemPrompt },
       ...conversationHistory.slice(-6), // Last 3 exchanges for context
@@ -220,16 +344,13 @@ Return ONLY valid JSON:
 }`;
 
   try {
-    const groq = getGroq();
-    const completion = await groq.chat.completions.create({
-      model: GROQ_MODEL,
+    const completion = await createGroqChatCompletion({
       messages: [{ role: "user", content: prompt }],
       max_tokens: 400,
       temperature: 0.3,
     });
     let raw = completion.choices[0].message.content.trim();
-    raw = raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1);
-    const parsed = JSON.parse(raw);
+    const parsed = safeParseJson(raw);
     return {
       score: Math.min(100, Math.max(0, parsed.score)),
       feedback: parsed.feedback,
@@ -277,16 +398,13 @@ Return ONLY valid JSON array (no markdown):
 Identify 4-6 distinct gaps. Order by severity (high first).`;
 
   try {
-    const groq = getGroq();
-    const completion = await groq.chat.completions.create({
-      model: GROQ_MODEL,
+    const completion = await createGroqChatCompletion({
       messages: [{ role: "user", content: prompt }],
-      max_tokens: 600,
+      max_tokens: 1000,
       temperature: 0.3,
     });
     let raw = completion.choices[0].message.content.trim();
-    raw = raw.substring(raw.indexOf('['), raw.lastIndexOf(']') + 1);
-    return JSON.parse(raw);
+    return safeParseJson(raw);
   } catch (err) {
     console.error("[Groq] Gap analysis failed:", err.message);
     return [];
@@ -331,16 +449,13 @@ Output ONLY valid JSON:
 DO NOT output placeholder values like "<actionable improvement 1>" or "<strength 1>". Use their actual data carefully!`;
 
   try {
-    const groq = getGroq();
-    const completion = await groq.chat.completions.create({
-      model: GROQ_MODEL,
+    const completion = await createGroqChatCompletion({
       messages: [{ role: "user", content: prompt }],
-      max_tokens: 600,
+      max_tokens: 1500,
       temperature: 0.3,
     });
     let raw = completion.choices[0].message.content.trim();
-    raw = raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1);
-    return JSON.parse(raw);
+    return safeParseJson(raw);
   } catch (err) {
     console.error("[Groq] Resume review failed:", err.message);
     return { score: 50, strengths: [], improvements: ["Review service unavailable"], missingKeywords: [] };
@@ -377,20 +492,61 @@ Return ONLY valid JSON:
 DO NOT output placeholder values like "<strength 1>". Use the actual data!`;
 
   try {
-    const groq = getGroq();
-    const completion = await groq.chat.completions.create({
-      model: GROQ_MODEL,
+    const completion = await createGroqChatCompletion({
       messages: [{ role: "user", content: prompt }],
-      max_tokens: 400,
+      max_tokens: 800,
       temperature: 0.3,
     });
     let raw = completion.choices[0].message.content.trim();
-    raw = raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1);
-    return JSON.parse(raw);
+    return safeParseJson(raw);
   } catch (err) {
     console.error("[Groq] GitHub review failed:", err.message);
     return { score: 0, summary: "Failed to analyze GitHub profile.", strengths: [], areas_for_growth: [] };
   }
 }
 
-module.exports = { generateFirstQuestion, generateFollowUpQuestion, evaluateAnswer, generateKnowledgeGaps, getTopicsForRole, generateResumeReview, analyzeGithubProfile };
+/**
+ * Transcribes audio using Groq Whisper model (whisper-large-v3).
+ * Provides fast and reliable fallback when other STT engines are unavailable.
+ * 
+ * @param {string} filePath - Absolute path to audio file on disk
+ * @param {string} [originalName="recording.webm"] - Original filename or hint for audio format
+ * @returns {Promise<string>} Transcribed speech text
+ */
+async function transcribeAudioWithGroq(filePath, originalName = "recording.webm") {
+  try {
+    const groq = getGroq();
+    const ext = path.extname(originalName) || (filePath.includes(".wav") ? ".wav" : ".webm");
+    const safeName = (originalName && originalName.includes(".")) ? originalName : `audio${ext}`;
+
+    const fileStream = fs.createReadStream(filePath);
+    const fileObj = typeof Groq.toFile === "function"
+      ? await Groq.toFile(fileStream, safeName)
+      : fileStream;
+
+    const res = await groq.audio.transcriptions.create({
+      file: fileObj,
+      model: "whisper-large-v3",
+    });
+    const transcript = res.text ? res.text.trim() : "";
+    console.log(`[Groq STT] Transcription completed (${transcript.length} chars)`);
+    return transcript;
+  } catch (err) {
+    console.error("[Groq STT] Transcription failed:", err.message);
+    throw err;
+  }
+}
+
+module.exports = {
+  getGroq,
+  createGroqChatCompletion,
+  safeParseJson,
+  generateFirstQuestion,
+  generateFollowUpQuestion,
+  evaluateAnswer,
+  generateKnowledgeGaps,
+  getTopicsForRole,
+  generateResumeReview,
+  analyzeGithubProfile,
+  transcribeAudioWithGroq,
+};

@@ -110,9 +110,60 @@ async function parseResumeWithGemini(filePath) {
     console.log(`[Gemini] Parsed resume: ${parsed.name}, ${(parsed.skills || []).length} skills`);
     return parsed;
   } catch (err) {
-    console.error("[Gemini] Resume parsing failed:", err.message);
+    if (err.message && (err.message.includes("CONSUMER_SUSPENDED") || err.message.includes("403 Forbidden"))) {
+      console.warn("[Gemini] API Key or project suspended by Google AI Studio (CONSUMER_SUSPENDED). Falling back to Groq...");
+    } else {
+      console.error("[Gemini] Resume parsing failed:", err.message);
+    }
     throw err;
   }
 }
 
-module.exports = { parseResumeWithGemini };
+/**
+ * Transcribes audio using Google Generative AI (Gemini multimodal audio capability).
+ * 
+ * @param {string} filePath - Absolute path to audio file on disk
+ * @param {string} [mimeType="audio/webm"] - Mime type of the audio
+ * @returns {Promise<string>} Transcribed speech text
+ */
+async function transcribeAudioWithGemini(filePath, mimeType = "audio/webm") {
+  try {
+    const client = getClient();
+    const modelName = process.env.GEMINI_MODEL || "gemini-2.0-flash";
+    const model = client.getGenerativeModel({ model: modelName });
+
+    // Clean mimeType by removing parameters like ';codecs=opus'
+    let cleanMimeType = (mimeType || "").split(";")[0].trim().toLowerCase();
+    if (!cleanMimeType || cleanMimeType === "application/octet-stream") {
+      const ext = path.extname(filePath).toLowerCase();
+      if (ext === ".wav") cleanMimeType = "audio/wav";
+      else if (ext === ".mp3") cleanMimeType = "audio/mp3";
+      else if (ext === ".ogg") cleanMimeType = "audio/ogg";
+      else cleanMimeType = "audio/webm";
+    }
+
+    const fileData = fs.readFileSync(filePath);
+    const base64Data = fileData.toString("base64");
+
+    const result = await model.generateContent([
+      {
+        inlineData: {
+          mimeType: cleanMimeType,
+          data: base64Data,
+        },
+      },
+      {
+        text: "Generate an accurate transcription of the spoken audio. Output ONLY the plain text transcription, with no additional commentary, conversational remarks, or markdown formatting. If the audio is silent or contains no discernible speech, return an empty string.",
+      },
+    ]);
+
+    const transcript = result.response.text().trim();
+    console.log(`[Gemini STT] Transcription completed (${transcript.length} chars)`);
+    return transcript;
+  } catch (err) {
+    console.error("[Gemini STT] Transcription failed:", err.message);
+    throw err;
+  }
+}
+
+module.exports = { parseResumeWithGemini, transcribeAudioWithGemini };

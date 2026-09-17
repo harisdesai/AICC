@@ -3,7 +3,7 @@ import api from "../lib/api";
 
 /**
  * Custom React Hook for capturing microphone streams with MediaRecorder
- * and sending binary audio blobs to the ElevenLabs STT backend endpoint.
+ * and sending binary audio blobs to the Gemini AI STT backend endpoint.
  */
 export function useAudioRecorder() {
   const [recording, setRecording] = useState(false);
@@ -46,7 +46,7 @@ export function useAudioRecorder() {
   /**
    * Stops active recorder, compiles audio blob, and uploads to POST /api/stt
    * 
-   * @returns {Promise<string>} Transcribed text from ElevenLabs / Fallback STT
+   * @returns {Promise<string>} Transcribed text from Gemini AI / Fallback STT
    */
   const stopRecording = useCallback(() => {
     return new Promise((resolve) => {
