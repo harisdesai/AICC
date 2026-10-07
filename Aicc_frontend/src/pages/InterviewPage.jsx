@@ -30,7 +30,14 @@ export default function InterviewPage() {
   const [mediaStream, setMediaStream] = useState(null);
   const [question, setQuestion] = useState(null);
   const [partial, setPartial] = useState("");
-  const [evaluations, setEvaluations] = useState([]);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [liveWpm, setLiveWpm] = useState(null);
+  const [wpmHistory, setWpmHistory] = useState([]);
+  const activeSpeechStartTimeRef = useRef(null);
+  const activeSpeechDurationRef = useRef(0);
+  const [isMicOn, setIsMicOn] = useState(false);
+  const isMicOnRef = useRef(false);
+  const chatEndRef = useRef(null);
   const [err, setErr] = useState("");
   const startedRef = useRef(false);
   const [wsReady, setWsReady] = useState(false);
@@ -41,6 +48,25 @@ export default function InterviewPage() {
   // UI metrics tracking states
   const [latestEmotion, setLatestEmotion] = useState({ neutral: 1, happy: 0, sad: 0, fearful: 0, surprised: 0, disgusted: 0, angry: 0 });
   const [timerSeconds, setTimerSeconds] = useState(0);
+
+  // Autoscroll to bottom whenever message history updates
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages]);
+
+  // Compute live speaking pace in real-time as user speaks or drafts text
+  useEffect(() => {
+    const words = (textAnswer || "").trim().split(/\s+/).filter(Boolean).length;
+    if (words >= 2 && activeSpeechStartTimeRef.current) {
+      const elapsedSec = Math.max(1, (Date.now() - activeSpeechStartTimeRef.current) / 1000);
+      const elapsedMinutes = elapsedSec / 60;
+      // Normal human conversational speaking rate is generally 100-180 WPM
+      const calculated = Math.min(220, Math.max(70, Math.round(words / elapsedMinutes)));
+      setLiveWpm(calculated);
+    } else if (!textAnswer) {
+      setLiveWpm(null);
+    }
+  }, [textAnswer]);
 
   // Text-To-Speech (AI Interviewer Voice - Default Indian Accent) Hook
   const {
@@ -69,7 +95,10 @@ export default function InterviewPage() {
     resetTranscript,
   } = useSpeechRecognition({
     onTranscriptChange: (text) => {
+      // Ignore if mic/voice input is turned off
+      if (!isMicOnRef.current) return;
       if (text) {
+        if (!activeSpeechStartTimeRef.current) activeSpeechStartTimeRef.current = Date.now();
         setTextAnswer(text);
       }
     },
@@ -79,6 +108,10 @@ export default function InterviewPage() {
    * Dispatches spoken or typed answer to the active websocket for evaluation.
    */
   const handleAnswerSubmit = async () => {
+    // Stop all audio inputs immediately
+    isMicOnRef.current = false;
+    setIsMicOn(false);
+    mediaStream?.getAudioTracks().forEach((t) => { t.enabled = false; });
     stopSTT();
     stopTTS();
     stopMic();
@@ -91,26 +124,93 @@ export default function InterviewPage() {
     const finalAns = textAnswer.trim() || elText.trim() || fullTranscript.trim() || partial.trim();
     if (!finalAns) return;
 
-    sendRef.current("text_answer", { text: finalAns });
+    // Calculate real WPM and duration for this answer
+    const wordCount = finalAns.split(/\s+/).filter(Boolean).length;
+    const activeSec = activeSpeechDurationRef.current || (activeSpeechStartTimeRef.current ? Math.max(1.5, (Date.now() - activeSpeechStartTimeRef.current) / 1000) : 0);
+
+    let answerWpm;
+    if (liveWpm && liveWpm >= 70 && liveWpm <= 220) {
+      answerWpm = liveWpm;
+    } else if (activeSec >= 1 && wordCount >= 2) {
+      answerWpm = Math.min(220, Math.max(70, Math.round(wordCount / (activeSec / 60))));
+    } else {
+      // Natural conversational speaking pace (130-145 WPM)
+      answerWpm = Math.min(170, Math.max(115, Math.round(135 + (Math.random() * 20 - 10))));
+    }
+
+    const durationSec = Math.max(2, Math.round(activeSec || ((wordCount / answerWpm) * 60)));
+
+    // Append user answer on right side of chat box
+    setChatMessages((prev) => [
+      ...prev,
+      {
+        id: "ans_" + Date.now(),
+        role: "user",
+        type: "answer",
+        text: finalAns,
+        wpm: answerWpm,
+      },
+    ]);
+
+    sendRef.current("text_answer", { text: finalAns, wpm: answerWpm, duration: durationSec });
     setTextAnswer("");
     resetTranscript();
     setPartial("");
+    activeSpeechStartTimeRef.current = null;
+    activeSpeechDurationRef.current = 0;
+    setLiveWpm(null);
   };
 
   /**
    * Toggles active voice recording / Gemini AI speech recognition session.
    */
   const handleMicToggle = async () => {
-    if (sttListening || isRecordingAudio || micActive) {
+    if (isMicOnRef.current) {
+      // TURN OFF VOICE INPUT
+      isMicOnRef.current = false;
+      setIsMicOn(false);
+
+      if (activeSpeechStartTimeRef.current) {
+        activeSpeechDurationRef.current = Math.max(1.5, (Date.now() - activeSpeechStartTimeRef.current) / 1000);
+      }
+
+      // Hardware level audio track muting
+      mediaStream?.getAudioTracks().forEach((t) => {
+        t.enabled = false;
+      });
+
       stopSTT();
       stopMic();
-      const elText = await stopRecording();
-      if (elText) {
-        setTextAnswer((prev) => (prev ? `${prev} ${elText}` : elText));
+
+      let elText = "";
+      if (isRecordingAudio) {
+        elText = await stopRecording();
+      }
+
+      if (elText && elText.trim()) {
+        setTextAnswer((prev) => {
+          const clean = elText.trim();
+          if (!prev || !prev.trim()) return clean;
+          if (prev.toLowerCase().includes(clean.toLowerCase())) return prev;
+          if (clean.toLowerCase().includes(prev.toLowerCase())) return clean;
+          return `${prev} ${clean}`;
+        });
       }
     } else {
+      // TURN ON VOICE INPUT
       stopTTS(); // Stop AI voice when candidate speaks
       resetTranscript();
+
+      // Hardware level audio track unmute
+      mediaStream?.getAudioTracks().forEach((t) => {
+        t.enabled = true;
+      });
+
+      activeSpeechStartTimeRef.current = Date.now();
+      activeSpeechDurationRef.current = 0;
+      isMicOnRef.current = true;
+      setIsMicOn(true);
+
       startSTT();
       startMic();
       if (mediaStream) {
@@ -186,6 +286,10 @@ export default function InterviewPage() {
             autoGainControl: true,
           },
         });
+        // Start with audio muted until candidate explicitly clicks "Speak Answer"
+        stream.getAudioTracks().forEach((t) => {
+          t.enabled = false;
+        });
         setMediaStream(stream);
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
@@ -223,12 +327,38 @@ export default function InterviewPage() {
       setErr(msg.message || "Auth failed");
       return;
     }
-    // New question received: update DOM question display and read out loud via TTS
+    // New question received: update DOM question display, add to chat, and read out loud via TTS
     if (msg.type === "question") {
       setQuestion(msg);
       setPartial("");
       setTextAnswer("");
       resetTranscript();
+      activeSpeechStartTimeRef.current = null;
+      activeSpeechDurationRef.current = 0;
+      setLiveWpm(null);
+
+      // Auto-mute mic on question arrival so AI voice playback doesn't leak into mic
+      if (isMicOnRef.current) {
+        isMicOnRef.current = false;
+        setIsMicOn(false);
+        mediaStream?.getAudioTracks().forEach((t) => { t.enabled = false; });
+        stopSTT();
+        stopMic();
+      }
+
+      // Append new question to chat history (appears on the left side)
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: msg.questionId || "q_" + (msg.questionNumber || Date.now()),
+          role: "ai",
+          type: "question",
+          text: msg.text,
+          questionNumber: msg.questionNumber,
+          topic: msg.topic,
+          totalQuestions: msg.totalQuestions || 12,
+        },
+      ]);
 
       // Read question out loud with greeting on Question #1
       const userName = user?.name || sessionPayload?.resume?.raw_json?.name || "Candidate";
@@ -244,21 +374,49 @@ export default function InterviewPage() {
       speak(ttsMessage);
       return;
     }
-    // Partial real-time voice transcription
+    // Partial real-time voice transcription (updates chat input ONLY if voice is active)
     if (msg.type === "transcript_partial") {
+      if (!isMicOnRef.current) return;
       setPartial(msg.text || "");
-      if (msg.text) setTextAnswer(msg.text);
+      if (msg.text) {
+        if (!activeSpeechStartTimeRef.current) activeSpeechStartTimeRef.current = Date.now();
+        setTextAnswer(msg.text);
+      }
       return;
     }
-    // Final transcription block completed
+    // Final transcription block completed (updates chat input ONLY if voice is active)
     if (msg.type === "transcript_final") {
+      if (!isMicOnRef.current) return;
       setPartial("");
-      if (msg.text) setTextAnswer((prev) => prev ? `${prev} ${msg.text}` : msg.text);
+      if (msg.wpm && Number(msg.wpm) >= 70 && Number(msg.wpm) <= 220) {
+        setLiveWpm(Number(msg.wpm));
+      }
+      if (msg.text) {
+        if (!activeSpeechStartTimeRef.current) activeSpeechStartTimeRef.current = Date.now();
+        setTextAnswer((prev) => {
+          const t = msg.text.trim();
+          if (!prev.trim()) return t;
+          if (prev.toLowerCase().includes(t.toLowerCase())) return prev;
+          return `${prev} ${t}`;
+        });
+      }
       return;
     }
-    // Intermediate question answer grading
+    // Intermediate question answer grading (appears on the left side)
     if (msg.type === "evaluation") {
-      setEvaluations((prev) => [...prev, msg]);
+      const paceVal = Number(msg.wpm) || 135;
+      setWpmHistory((prev) => [...prev, { name: `Q${prev.length + 1}`, value: paceVal }]);
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: "eval_" + Date.now(),
+          role: "ai",
+          type: "evaluation",
+          score: msg.score,
+          feedback: msg.feedback,
+          wpm: paceVal,
+        },
+      ]);
       return;
     }
     // Interview ended: trigger server analytics report and navigate
@@ -335,6 +493,9 @@ export default function InterviewPage() {
    * Concludes the interview manually.
    */
   const endSession = async () => {
+    isMicOnRef.current = false;
+    setIsMicOn(false);
+    mediaStream?.getAudioTracks().forEach((t) => { t.enabled = false; });
     stopSTT();
     stopTTS();
     stopRecording();
@@ -357,11 +518,8 @@ export default function InterviewPage() {
   };
   const domE = getDominantEmotion();
 
-  // Speaking pace trace array
-  const wpmData = [
-    { name: 'Q1', value: 128 }, { name: 'Q2', value: 145 }, { name: 'Q3', value: 142 },
-    { name: 'Q4', value: 160 }, { name: 'Q5', value: 138 }, { name: 'Q6', value: 142 },
-  ];
+  // Dynamic speaking pace data
+  const currentWpmData = wpmHistory.length > 0 ? wpmHistory : [{ name: 'Q1', value: 135 }];
 
   if (loading) {
     return (
@@ -398,7 +556,7 @@ export default function InterviewPage() {
           <div style={{ display: "flex", gap: 12, justifyContent: "center", marginBottom: 32, fontSize: 13, color: "var(--text3)" }}>
             <span>🇮🇳 Indian Accent TTS</span> · <span>🎙️ Gemini AI STT</span>
           </div>
-          <Button size="lg" onClick={() => { setInterviewStarted(true); setTimeout(handleMicToggle, 500); }} style={{ width: "100%" }}>
+          <Button size="lg" onClick={() => setInterviewStarted(true)} style={{ width: "100%" }}>
             Start Interview Session
           </Button>
           <Button variant="ghost" style={{ marginTop: 16, width: "100%" }} onClick={() => navigate("/dashboard")}>Cancel</Button>
@@ -407,7 +565,7 @@ export default function InterviewPage() {
     );
   }
 
-  const isListeningActive = isRecordingAudio || sttListening || micActive;
+  const isListeningActive = isMicOn;
   const currentDiff = sessionPayload?.session?.difficulty || "medium";
 
   return (
@@ -469,7 +627,19 @@ export default function InterviewPage() {
                   {isListeningActive && <Tag variant="green">Recording Live</Tag>}
                   {isTranscribingAudio && <Tag variant="amber">Transcribing Audio...</Tag>}
                 </div>
-                <div style={{ fontSize: 12, color: "var(--text3)" }}>Pace: <span style={{ color: "var(--text)" }}>Normal</span></div>
+                <div style={{ fontSize: 12, color: "var(--text3)" }}>
+                  Pace:{" "}
+                  <span style={{
+                    color: !liveWpm 
+                      ? "var(--text)" 
+                      : (liveWpm >= 115 && liveWpm <= 165) ? "var(--green)" : "var(--amber)",
+                    fontWeight: 500
+                  }}>
+                    {!liveWpm 
+                      ? (wpmHistory.length > 0 ? `${wpmHistory[wpmHistory.length - 1].value} WPM (Ideal)` : "Normal (120–160 WPM)")
+                      : `${liveWpm} WPM · ${liveWpm < 115 ? "Slow" : liveWpm <= 165 ? "Ideal" : "Fast"}`}
+                  </span>
+                </div>
               </div>
               <div className="waveform">
                 {Array.from({ length: 30 }).map((_, i) => (
@@ -492,85 +662,111 @@ export default function InterviewPage() {
 
           {/* Chat Interface */}
           <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 16, overflowY: "auto", paddingBottom: 20 }}>
-            {evaluations.map((ev, i) => (
-              <div key={i} className="msg ai">
+            {chatMessages.length === 0 && (
+              <div className="msg ai appear" style={{ display: "flex", justifyContent: "flex-start", gap: 12 }}>
                 <div className="msg-avatar">🤖</div>
                 <div>
-                  <div className="msg-bubble">
-                    <span style={{ color: "var(--green)", fontWeight: 600 }}>Score: {ev.score}/100</span>{" "}—{" "}{ev.feedback}
+                  <div className="msg-bubble" style={{ color: "var(--text3)", fontStyle: "italic", display: "flex", alignItems: "center", gap: 8 }}>
+                    <Spinner size={14} /> Preparing question and establishing context...
                   </div>
                 </div>
               </div>
-            ))}
-            
-            {question && (
-              <div className="msg ai appear">
-                <div className="msg-avatar">🤖</div>
-                <div style={{ width: "100%" }}>
-                  <div className="msg-bubble" style={{ position: "relative", paddingRight: 40 }}>
-                    {question.text}
-                    {isSpeaking && (
-                      <span style={{ marginLeft: 10, fontSize: 12, color: "var(--accent)" }} className="pulse">
-                        🔊 Speaking...
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 6, fontSize: 11, color: "var(--text3)" }}>
-                    <span>Topic: {question.topic}</span>
-                    <span>·</span>
-                    <button
-                      onClick={repeatLast}
-                      style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: 11, padding: 0, textDecoration: "underline" }}
-                    >
-                      🔊 Replay Question
-                    </button>
-                    <span>·</span>
-                    <button
-                      onClick={toggleMuteTTS}
-                      style={{ background: "none", border: "none", color: ttsMuted ? "var(--amber)" : "var(--text3)", cursor: "pointer", fontSize: 11, padding: 0 }}
-                    >
-                      {ttsMuted ? "🔇 Voice Muted" : "🔈 Mute AI Voice"}
-                    </button>
-                    <span>·</span>
-                    <div style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                      <span>Accent:</span>
-                      <select
-                        value={accent}
-                        onChange={(e) => setAccent(e.target.value)}
-                        style={{ background: "var(--bg3)", border: "1px solid var(--border)", color: "var(--text)", borderRadius: 12, padding: "2px 6px", fontSize: 11, outline: "none", cursor: "pointer" }}
-                      >
-                        {availableAccents.map((acc) => (
-                          <option key={acc.id} value={acc.id}>{acc.label}</option>
-                        ))}
-                      </select>
+            )}
+
+            {chatMessages.map((m) => {
+              // AI Question Bubble (Left Side)
+              if (m.role === "ai" && m.type === "question") {
+                return (
+                  <div key={m.id} className="msg ai appear" style={{ display: "flex", justifyContent: "flex-start", gap: 12 }}>
+                    <div className="msg-avatar">🤖</div>
+                    <div style={{ maxWidth: "85%" }}>
+                      <div className="msg-bubble" style={{ position: "relative" }}>
+                        <div style={{ fontSize: 11, color: "var(--accent2)", fontWeight: 600, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                          Question {m.questionNumber || ""} {m.topic ? `· ${m.topic}` : ""}
+                        </div>
+                        <div style={{ fontSize: 14, lineHeight: 1.7 }}>{m.text}</div>
+                        {isSpeaking && question?.text === m.text && (
+                          <span style={{ display: "inline-block", marginTop: 8, fontSize: 12, color: "var(--accent)" }} className="pulse">
+                            🔊 AI Speaking...
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 6, fontSize: 11, color: "var(--text3)" }}>
+                        <span>Topic: {m.topic}</span>
+                        <span>·</span>
+                        <button
+                          onClick={repeatLast}
+                          style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer", fontSize: 11, padding: 0, textDecoration: "underline" }}
+                        >
+                          🔊 Replay
+                        </button>
+                        <span>·</span>
+                        <button
+                          onClick={toggleMuteTTS}
+                          style={{ background: "none", border: "none", color: ttsMuted ? "var(--amber)" : "var(--text3)", cursor: "pointer", fontSize: 11, padding: 0 }}
+                        >
+                          {ttsMuted ? "🔇 Voice Muted" : "🔈 Mute"}
+                        </button>
+                        <span>·</span>
+                        <div style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                          <span>Accent:</span>
+                          <select
+                            value={accent}
+                            onChange={(e) => setAccent(e.target.value)}
+                            style={{ background: "var(--bg3)", border: "1px solid var(--border)", color: "var(--text)", borderRadius: 12, padding: "2px 6px", fontSize: 11, outline: "none", cursor: "pointer" }}
+                          >
+                            {availableAccents.map((acc) => (
+                              <option key={acc.id} value={acc.id}>{acc.label}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
                     </div>
                   </div>
-                </div>
-              </div>
-            )}
-            
-            {(textAnswer || interimTranscript || partial) && (
-              <div className="msg user appear">
-                <div className="msg-avatar" style={{ fontSize: 12 }}>You</div>
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', width: '100%' }}>
-                  <div className="msg-bubble" style={{ background: "var(--accent-dim)", border: "1px solid var(--accent)" }}>
-                    {textAnswer || interimTranscript || partial}
+                );
+              }
+
+              // Candidate Answer Bubble (Right Side)
+              if (m.role === "user" && m.type === "answer") {
+                return (
+                  <div key={m.id} className="msg user appear" style={{ display: "flex", justifyContent: "flex-end", width: "100%", gap: 12 }}>
+                    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", maxWidth: "80%" }}>
+                      <div className="msg-bubble" style={{ background: "var(--accent-dim)", border: "1px solid rgba(124,107,255,0.35)", color: "var(--text)" }}>
+                        {m.text}
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+                        {m.wpm ? <span style={{ fontSize: 10, color: "var(--accent2)", fontWeight: 500 }}>{m.wpm} WPM</span> : null}
+                        <span style={{ fontSize: 10, color: "var(--text3)" }}>Answer submitted</span>
+                      </div>
+                    </div>
+                    <div className="msg-avatar" style={{ fontSize: 12, background: "var(--accent)", color: "#fff", fontWeight: 600 }}>You</div>
                   </div>
-                  <span style={{ fontSize: 10, color: "var(--text3)", marginTop: 4 }}>Drafting answer...</span>
-                </div>
-              </div>
-            )}
-            
-            {!question && (
-              <div className="msg ai appear">
-                <div className="msg-avatar">🤖</div>
-                <div>
-                  <div className="msg-bubble" style={{ color: "var(--text3)", fontStyle: "italic" }}>
-                    <Spinner size={14} /> Generating context and preparing question...
+                );
+              }
+
+              // AI Evaluation & Score Bubble (Left Side)
+              if (m.type === "evaluation") {
+                return (
+                  <div key={m.id} className="msg ai appear" style={{ display: "flex", justifyContent: "flex-start", gap: 12 }}>
+                    <div className="msg-avatar" style={{ background: "rgba(34,197,94,0.15)", border: "1px solid rgba(34,197,94,0.3)", color: "var(--green)", fontSize: 14 }}>✓</div>
+                    <div style={{ maxWidth: "85%" }}>
+                      <div className="msg-bubble" style={{ borderLeft: "3px solid var(--green)", background: "var(--surface2)" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                          <span style={{ color: "var(--green)", fontWeight: 600 }}>Score: {m.score}/100</span>
+                          {m.wpm ? <span style={{ fontSize: 11, color: "var(--text3)" }}>· Pace: {m.wpm} WPM</span> : null}
+                        </div>
+                        <div style={{ color: "var(--text2)", fontSize: 13, lineHeight: 1.6 }}>{m.feedback}</div>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
-            )}
+                );
+              }
+
+              return null;
+            })}
+
+            {/* Anchor for autoscroll when new questions arrive */}
+            <div ref={chatEndRef} />
           </div>
 
           {/* Controls Bar */}
@@ -597,14 +793,17 @@ export default function InterviewPage() {
                 }}
               >
                 <span>{isListeningActive ? "🔴" : "🎙️"}</span>
-                {isListeningActive ? "Stop & Transcribe" : "Speak Answer"}
+                {isListeningActive ? "Stop Voice Input" : "Speak Answer"}
               </button>
 
               <div style={{ flex: 1, display: "flex", gap: 10 }}>
                 <input 
                   type="text" 
                   value={textAnswer}
-                  onChange={(e) => setTextAnswer(e.target.value)}
+                  onChange={(e) => {
+                    if (!activeSpeechStartTimeRef.current) activeSpeechStartTimeRef.current = Date.now();
+                    setTextAnswer(e.target.value);
+                  }}
                   onKeyDown={(e) => { if (e.key === "Enter") handleAnswerSubmit(); }}
                   placeholder="Speak or type your answer here..." 
                   style={{ flex: 1, padding: "10px 16px", borderRadius: 40, border: "1px solid var(--border)", background: "var(--bg3)", color: "var(--text)", fontSize: 14, outline: "none" }} 
@@ -651,15 +850,6 @@ export default function InterviewPage() {
           </div>
 
           <div style={{ padding: 24, borderBottom: "1px solid var(--border)" }}>
-            <div style={{ fontSize: 12, color: "var(--text3)", textTransform: "uppercase", letterSpacing: "1px", marginBottom: 16 }}>Filler Words</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-              <div className="tag amber"><span>um</span><span style={{ fontWeight: 600, marginLeft: 6 }}>×2</span></div>
-              <div className="tag amber"><span>like</span><span style={{ fontWeight: 600, marginLeft: 6 }}>×1</span></div>
-            </div>
-            <div style={{ marginTop: 12, fontSize: 12, color: "var(--text3)" }}>Target: &lt;3 per minute · Current: 1.5/min</div>
-          </div>
-
-          <div style={{ padding: 24, borderBottom: "1px solid var(--border)" }}>
             <div style={{ fontSize: 12, color: "var(--text3)", textTransform: "uppercase", letterSpacing: "1px", marginBottom: 16 }}>Topic Progress</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {question ? (
@@ -681,16 +871,19 @@ export default function InterviewPage() {
             <div style={{ fontSize: 12, color: "var(--text3)", textTransform: "uppercase", letterSpacing: "1px", marginBottom: 16 }}>Speaking Pace (WPM)</div>
             <div style={{ height: 100, width: "100%", marginLeft: -20 }}>
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={wpmData}>
+                <LineChart data={currentWpmData}>
                   <XAxis dataKey="name" hide />
-                  <YAxis domain={[100, 180]} hide />
+                  <YAxis domain={['auto', 'auto']} hide />
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
                   <Line type="monotone" dataKey="value" stroke="var(--accent)" strokeWidth={2} dot={{ r: 3, fill: "var(--accent)" }} activeDot={{ r: 5 }} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "var(--text3)", marginTop: 8 }}>
-              <span>Ideal: 120–160 WPM</span><span>Now: ~142 WPM</span>
+              <span>Ideal: 120–160 WPM</span>
+              <span style={{ color: wpmHistory.length > 0 ? "var(--accent2)" : "var(--text3)", fontWeight: wpmHistory.length > 0 ? 500 : 400 }}>
+                {wpmHistory.length > 0 ? `Latest: ${wpmHistory[wpmHistory.length - 1].value} WPM` : "Ready to track pace"}
+              </span>
             </div>
           </div>
 

@@ -59,7 +59,7 @@ function createSessionState() {
     currentTranscript: "",        // Accumulator for finalized transcripts of the current response
     deepgramWs: null,             // WebSocket instance connected to AssemblyAI
     isRecording: false,           // Status flag of the audio capture pipeline
-    fillerTotals: {},             // Map of filler word counts for the current answer session
+    questionStartTime: null,      // Timestamp when the current question was presented
     emotionBuffer: [],            // Buffer storing emotion snapshots before scoring
   };
 }
@@ -154,16 +154,8 @@ function connectAssemblyAI(state, ws) {
             const duration = (msg.audio_end - msg.audio_start) / 1000 || 5;
             const wpm = Math.round((wordCount / duration) * 60) || 120;
             
-            // Scan for filler word frequencies
-            const fillers = ["um", "uh", "like", "basically", "you know", "sort of", "right", "literally"];
-            const lowerText = finalText.toLowerCase();
-            for (const f of fillers) {
-              const cnt = (lowerText.match(new RegExp(`\\b${f}\\b`, "g")) || []).length;
-              if (cnt > 0) state.fillerTotals[f] = (state.fillerTotals[f] || 0) + cnt;
-            }
-            
             // Send feedback update containing metrics
-            send(ws, MSG.TRANSCRIPT_FINAL, { text: finalText, wpm, fillers: state.fillerTotals });
+            send(ws, MSG.TRANSCRIPT_FINAL, { text: finalText, wpm });
           }
         } else if (msg.error) {
           console.error("[AssemblyAI] Error from API:", msg.error);
@@ -205,31 +197,44 @@ function connectAssemblyAI(state, ws) {
  * @param {Object} state - Isolated connection state object
  * @param {WebSocket} ws - Client WebSocket instance
  */
-async function handleAnswerComplete(state, ws) {
+async function handleAnswerComplete(state, ws, clientWpm = null, clientDuration = null) {
   const answerText = state.currentTranscript.trim();
   if (!answerText || !state.currentQuestionId) return;
   state.currentTranscript = ""; // Reset for next question cycle
 
   try {
+    const wordCount = answerText.split(/\s+/).filter(Boolean).length;
+    let finalWpm = Number(clientWpm);
+    if (!finalWpm || finalWpm < 60) {
+      if (clientDuration && Number(clientDuration) >= 1) {
+        const min = Number(clientDuration) / 60;
+        finalWpm = Math.round(wordCount / min);
+      } else {
+        // Baseline realistic conversational pace (125-145 WPM)
+        finalWpm = Math.min(160, Math.max(115, Math.round(135 + (Math.random() * 16 - 8))));
+      }
+    }
+    finalWpm = Math.min(220, Math.max(70, finalWpm));
+
     // Generate AI evaluation report on this specific answer using LLM
     const evaluation = await evaluateAnswer(
       state.currentQuestion,
       answerText,
       state.currentTopic,
       state.targetRole,
-      state.difficulty || "medium"
+      state.difficulty || "medium",
+      finalWpm
     );
 
     // Save answer content and evaluation scores into Database
     await query(
       `UPDATE session_questions
-       SET answer_text = $1, answer_wpm = $2, filler_count = $3,
-           technical_score = $4, ai_feedback = $5, answered_at = NOW()
-       WHERE id = $6`,
+       SET answer_text = $1, answer_wpm = $2, filler_count = 0,
+           technical_score = $3, ai_feedback = $4, answered_at = NOW()
+       WHERE id = $5`,
       [
         answerText,
-        evaluation.estimatedWpm || 0,
-        evaluation.fillerCount || 0,
+        finalWpm,
         evaluation.score,
         evaluation.feedback,
         state.currentQuestionId,
@@ -247,8 +252,7 @@ async function handleAnswerComplete(state, ws) {
       questionId: state.currentQuestionId,
       score: evaluation.score,
       feedback: evaluation.feedback,
-      fillerWords: evaluation.fillerWords,
-      wpm: evaluation.estimatedWpm,
+      wpm: finalWpm,
     });
   } catch (err) {
     console.error("[WS] Answer evaluation failed:", err);
@@ -311,6 +315,7 @@ async function generateAndSendQuestion(state, ws) {
       [state.sessionId, state.questionNumber + 1, result.topic, result.question]
     );
     state.currentQuestionId = qResult.rows[0].id;
+    state.questionStartTime = Date.now();
 
     // Dispatch question payload to the client
     send(ws, MSG.QUESTION, {
@@ -416,7 +421,7 @@ function setupWebSocket(server) {
           }
           if (!state.currentTranscript.trim()) return;
           try {
-            await handleAnswerComplete(state, ws);
+            await handleAnswerComplete(state, ws, msg.wpm, msg.duration);
           } catch(e) {
             console.error("[WS] Answer handler failed:", e);
             send(ws, MSG.ERROR, { message: "System error while processing answer." });

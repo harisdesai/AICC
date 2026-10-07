@@ -5,7 +5,7 @@ import { useAuthStore } from "../stores/authStore";
 const FEATURES = [
   { icon: "📄", title: "Resume Intelligence", desc: "Gemini 2.5 Flash parses your PDF into structured JSON and cross-validates every claim against your GitHub repositories." },
   { icon: "🎭", title: "Emotion Recognition", desc: "Tracks 7 facial expression states at 2 FPS using face-api.js — Happy, Sad, Fear, Angry, Surprise, Disgust, Neutral." },
-  { icon: "🎙️", title: "Voice & Prosody", desc: "Deepgram STT with <300ms word-level timestamps, filler word tracking, WPM analysis, and pitch modulation scoring." },
+  { icon: "🎙️", title: "Voice & Prosody", desc: "Real-time speech recognition with live word-level pace analysis, WPM metrics, and vocal delivery scoring." },
   { icon: "🧠", title: "RAG-Powered Questions", desc: "LangChain + ChromaDB retrieves context from your GitHub README embeddings before generating every follow-up question." },
   { icon: "📊", title: "Performance Dashboard", desc: "Radar charts, WPM graphs, emotion heatmaps, and knowledge gap analysis — all in a single post-session report." },
 ];

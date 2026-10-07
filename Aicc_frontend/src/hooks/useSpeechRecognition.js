@@ -18,8 +18,13 @@ export function useSpeechRecognition({ onTranscriptChange } = {}) {
   const recognitionRef = useRef(null);
   const shouldListenRef = useRef(false);
   const finalTranscriptRef = useRef("");
+  const onTranscriptChangeRef = useRef(onTranscriptChange);
 
-  // Initialize SpeechRecognition API
+  useEffect(() => {
+    onTranscriptChangeRef.current = onTranscriptChange;
+  }, [onTranscriptChange]);
+
+  // Initialize SpeechRecognition API once on mount
   useEffect(() => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -33,6 +38,9 @@ export function useSpeechRecognition({ onTranscriptChange } = {}) {
     recognition.lang = "en-US";
 
     recognition.onresult = (event) => {
+      // Guard: strictly ignore any events if listening was turned off
+      if (!shouldListenRef.current) return;
+
       let interim = "";
       let newlyFinalized = "";
 
@@ -52,8 +60,8 @@ export function useSpeechRecognition({ onTranscriptChange } = {}) {
       setInterimTranscript(interim);
 
       const combined = (finalTranscriptRef.current + " " + interim).trim();
-      if (onTranscriptChange) {
-        onTranscriptChange(combined);
+      if (onTranscriptChangeRef.current && shouldListenRef.current) {
+        onTranscriptChangeRef.current(combined);
       }
     };
 
@@ -84,10 +92,12 @@ export function useSpeechRecognition({ onTranscriptChange } = {}) {
     return () => {
       shouldListenRef.current = false;
       try {
-        recognition.stop();
-      } catch (_) {}
+        recognition.abort();
+      } catch (_) {
+        try { recognition.stop(); } catch (_) {}
+      }
     };
-  }, [onTranscriptChange]);
+  }, []);
 
   /**
    * Starts browser speech recognition listening loop.
@@ -106,14 +116,18 @@ export function useSpeechRecognition({ onTranscriptChange } = {}) {
   }, [supported]);
 
   /**
-   * Stops speech recognition listening loop.
+   * Stops speech recognition listening loop immediately.
    */
   const stopListening = useCallback(() => {
     shouldListenRef.current = false;
     if (recognitionRef.current) {
       try {
-        recognitionRef.current.stop();
-      } catch (_) {}
+        recognitionRef.current.abort();
+      } catch (_) {
+        try {
+          recognitionRef.current.stop();
+        } catch (_) {}
+      }
     }
     setListening(false);
     setInterimTranscript("");

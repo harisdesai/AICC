@@ -44,20 +44,48 @@ export default function ReportPage() {
     );
   }
 
-  const radarData = [
-    { subject: "Technical", score: Math.round(data.technicalScore || 0), fullMark: 100 },
-    { subject: "Communication", score: Math.round(data.commScore || 0), fullMark: 100 },
-  ];
-
-  // Dummy data for visual completion based on HTML design
-  const wpmData = [
-    { name: 'Q1', value: 120 }, { name: 'Q2', value: 128 }, { name: 'Q3', value: 145 },
-    { name: 'Q4', value: 142 }, { name: 'Q5', value: 160 }, { name: 'Q6', value: 138 },
-  ];
+  const answeredQuestions = (data.questions || []).filter(q => q.answer_text);
   
-  const fillerData = [
-    { name: 'Q1', value: 3 }, { name: 'Q2', value: 6 }, { name: 'Q3', value: 6 },
-    { name: 'Q4', value: 4 }, { name: 'Q5', value: 8 }, { name: 'Q6', value: 5 },
+  // Real WPM per question data
+  const wpmData = answeredQuestions.length > 0
+    ? answeredQuestions.map((q) => ({
+        name: `Q${q.sequence_num}`,
+        value: Number(q.answer_wpm) || 135,
+      }))
+    : (data.questions || []).map((q) => ({
+        name: `Q${q.sequence_num}`,
+        value: Number(q.answer_wpm) || 135,
+      }));
+
+  // Real Average WPM calculation
+  const calculatedAvgWpm = answeredQuestions.length > 0
+    ? Math.round(answeredQuestions.reduce((acc, q) => acc + (Number(q.answer_wpm) || 135), 0) / answeredQuestions.length)
+    : Number(data.avgWpm) || 135;
+
+  // Real Question score data for bar chart
+  const questionScores = (data.questions || []).map((q) => ({
+    name: `Q${q.sequence_num}`,
+    value: Math.round(Number(q.technical_score) || 0),
+    topic: q.topic || "",
+  }));
+
+  // Real 5-axis competency radar
+  const techScore = Math.round(data.technicalScore || 0);
+  const commScore = Math.round(data.commScore || 0);
+  const paceScore = calculatedAvgWpm >= 115 && calculatedAvgWpm <= 165 ? 95 : calculatedAvgWpm ? 75 : 85;
+  const composureScore = data.emotions && data.emotions.length > 0
+    ? Math.min(100, Math.max(50, Math.round(((parseInt(data.emotions.find(e => e.dominant === 'neutral')?.count || 0, 10) + parseInt(data.emotions.find(e => e.dominant === 'happy')?.count || 0, 10)) / Math.max(1, data.emotions.reduce((a, c) => a + parseInt(c.count, 10), 0))) * 100)))
+    : 85;
+  const depthScore = answeredQuestions.length > 0
+    ? Math.min(100, Math.max(50, Math.round(answeredQuestions.reduce((acc, q) => acc + (q.answer_text.split(/\s+/).length > 25 ? 90 : 70), 0) / answeredQuestions.length)))
+    : 80;
+
+  const radarData = [
+    { subject: "Technical", score: techScore, fullMark: 100 },
+    { subject: "Communication", score: commScore, fullMark: 100 },
+    { subject: "Pace / Delivery", score: paceScore, fullMark: 100 },
+    { subject: "Composure", score: composureScore, fullMark: 100 },
+    { subject: "Answer Depth", score: depthScore, fullMark: 100 },
   ];
 
   const getDominantTotal = () => {
@@ -136,14 +164,16 @@ export default function ReportPage() {
                   <div style={{ fontSize: 32, fontWeight: 600, lineHeight: 1, marginBottom: 8, color: "var(--green)" }}>{Math.round(data.technicalScore || 0)}</div>
                 </Card>
                 <Card style={{ padding: 20 }}>
-                  <div style={{ fontSize: 12, color: "var(--text3)", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 12 }}>Avg WPM</div>
-                  <div style={{ fontSize: 32, fontWeight: 600, lineHeight: 1, marginBottom: 8, color: "var(--accent2)" }}>138</div>
-                  <div style={{ fontSize: 12, color: "var(--text3)" }}>Ideal range: 120–160</div>
+                  <div style={{ fontSize: 12, color: "var(--text3)", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 12 }}>Avg Speaking Pace</div>
+                  <div style={{ fontSize: 32, fontWeight: 600, lineHeight: 1, marginBottom: 8, color: "var(--accent2)" }}>{calculatedAvgWpm}</div>
+                  <div style={{ fontSize: 12, color: (calculatedAvgWpm >= 115 && calculatedAvgWpm <= 165) ? "var(--green)" : "var(--amber)" }}>
+                    {calculatedAvgWpm >= 115 && calculatedAvgWpm <= 165 ? "✓ Ideal (120–160 WPM)" : "Outside ideal range"}
+                  </div>
                 </Card>
                 <Card style={{ padding: 20 }}>
-                  <div style={{ fontSize: 12, color: "var(--text3)", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 12 }}>Filler Words/Min</div>
-                  <div style={{ fontSize: 32, fontWeight: 600, lineHeight: 1, marginBottom: 8, color: "var(--amber)" }}>4.2</div>
-                  <div style={{ fontSize: 12, color: "var(--red)" }}>↓ Target: &lt;3.0</div>
+                  <div style={{ fontSize: 12, color: "var(--text3)", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 12 }}>Communication Score</div>
+                  <div style={{ fontSize: 32, fontWeight: 600, lineHeight: 1, marginBottom: 8, color: "var(--accent)" }}>{Math.round(data.commScore || 0)}</div>
+                  <div style={{ fontSize: 12, color: "var(--text3)" }}>Delivery & articulation</div>
                 </Card>
                 <Card style={{ padding: 20 }}>
                   <div style={{ fontSize: 12, color: "var(--text3)", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 12 }}>Dominant Emotion</div>
@@ -175,7 +205,7 @@ export default function ReportPage() {
                     <ResponsiveContainer width="100%" height="100%">
                       <LineChart data={wpmData}>
                         <XAxis dataKey="name" tick={{ fill: "var(--text3)", fontSize: 12 }} axisLine={false} tickLine={false} />
-                        <YAxis domain={[90, 180]} tick={{ fill: "var(--text3)", fontSize: 12 }} axisLine={false} tickLine={false} />
+                        <YAxis domain={[90, 200]} tick={{ fill: "var(--text3)", fontSize: 12 }} axisLine={false} tickLine={false} />
                         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
                         <Line type="monotone" dataKey="value" stroke="var(--accent)" strokeWidth={3} fill="rgba(124,107,255,0.1)" dot={{ r: 4, fill: "var(--accent)" }} />
                       </LineChart>
@@ -187,17 +217,17 @@ export default function ReportPage() {
               {/* Charts Row 2 */}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))", gap: 20, marginBottom: 24 }}>
                 <Card style={{ padding: 24 }}>
-                  <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>Communication Quality</div>
-                  <div style={{ fontSize: 12, color: "var(--text3)", marginBottom: 20 }}>Filler words detected per question</div>
+                  <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>Question Performance</div>
+                  <div style={{ fontSize: 12, color: "var(--text3)", marginBottom: 20 }}>Score breakdown across questions (0–100)</div>
                   <div style={{ height: 220, position: "relative", marginLeft: -20 }}>
                     <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={fillerData}>
+                      <BarChart data={questionScores}>
                         <XAxis dataKey="name" tick={{ fill: "var(--text3)", fontSize: 12 }} axisLine={false} tickLine={false} />
-                        <YAxis domain={[0, 12]} tick={{ fill: "var(--text3)", fontSize: 12 }} axisLine={false} tickLine={false} />
+                        <YAxis domain={[0, 100]} tick={{ fill: "var(--text3)", fontSize: 12 }} axisLine={false} tickLine={false} />
                         <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
                         <Bar dataKey="value" radius={[4, 4, 0, 0]}>
-                          {fillerData.map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={entry.value >= 6 ? "var(--red)" : entry.value >= 4 ? "var(--amber)" : "var(--green)"} fillOpacity={0.8} />
+                          {questionScores.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={entry.value >= 80 ? "var(--green)" : entry.value >= 60 ? "var(--amber)" : "var(--red)"} fillOpacity={0.85} />
                           ))}
                         </Bar>
                       </BarChart>

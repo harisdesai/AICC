@@ -476,11 +476,15 @@ app.get("/api/sessions/:id/report", authenticate, async (req, res, next) => {
       ORDER BY count DESC
     `, [sid]);
 
+    const answeredWpms = qres.rows.map(q => Number(q.answer_wpm) || 0).filter(w => w > 0);
+    const avgWpm = answeredWpms.length ? Math.round(answeredWpms.reduce((a, b) => a + b, 0) / answeredWpms.length) : 135;
+
     res.json({
       session,
       overallScore: session.overall_score,
       technicalScore: session.technical_score,
       commScore: session.comm_score,
+      avgWpm,
       knowledgeGaps,
       emotions: eRes.rows,
       questions: qres.rows,

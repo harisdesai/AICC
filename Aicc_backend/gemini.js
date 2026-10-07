@@ -74,6 +74,15 @@ Required schema:
 }
 `;
 
+const CANDIDATE_MODELS = [
+  process.env.GEMINI_MODEL,
+  "gemini-3.7-flash",
+  "gemini-3.8-flash",
+  "gemini-flash-latest",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+].filter(Boolean);
+
 /**
  * Reads a PDF file, submits it along with a parsing schema to Gemini, and returns parsed JSON.
  * 
@@ -81,42 +90,55 @@ Required schema:
  * @returns {Promise<Object>} Formatted JSON payload containing structured resume details
  */
 async function parseResumeWithGemini(filePath) {
-  try {
-    const client = getClient();
-    const modelName = process.env.GEMINI_MODEL || "gemini-2.0-flash";
-    const model = client.getGenerativeModel({ model: modelName });
+  const client = getClient();
+  const fileData = fs.readFileSync(filePath);
+  const base64Data = fileData.toString("base64");
 
-    // Read PDF file synchronously and format into base64 payload
-    const fileData = fs.readFileSync(filePath);
-    const base64Data = fileData.toString("base64");
-
-    // Query generative model passing the base64 object and schema constraints
-    const result = await model.generateContent([
-      {
-        inlineData: {
-          mimeType: "application/pdf",
-          data: base64Data,
+  let lastError = null;
+  for (const modelName of CANDIDATE_MODELS) {
+    try {
+      const model = client.getGenerativeModel({ model: modelName });
+      const result = await model.generateContent([
+        {
+          inlineData: {
+            mimeType: "application/pdf",
+            data: base64Data,
+          },
         },
-      },
-      { text: RESUME_PARSE_PROMPT },
-    ]);
+        { text: RESUME_PARSE_PROMPT },
+      ]);
 
-    const responseText = result.response.text().trim();
-    
-    // Strip any accidental markdown code fences inserted by the model
-    const cleaned = responseText.replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim();
-    const parsed = JSON.parse(cleaned);
+      const responseText = result.response.text().trim();
+      const cleaned = responseText.replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim();
+      const parsed = JSON.parse(cleaned);
 
-    console.log(`[Gemini] Parsed resume: ${parsed.name}, ${(parsed.skills || []).length} skills`);
-    return parsed;
-  } catch (err) {
-    if (err.message && (err.message.includes("CONSUMER_SUSPENDED") || err.message.includes("403 Forbidden"))) {
-      console.warn("[Gemini] API Key or project suspended by Google AI Studio (CONSUMER_SUSPENDED). Falling back to Groq...");
-    } else {
-      console.error("[Gemini] Resume parsing failed:", err.message);
+      console.log(`[Gemini] Parsed resume using ${modelName}: ${parsed.name}, ${(parsed.skills || []).length} skills`);
+      return parsed;
+    } catch (err) {
+      lastError = err;
+      const isUnavailable = err.message && (
+        err.message.includes("404") ||
+        err.message.includes("not found") ||
+        err.message.includes("no longer available") ||
+        err.message.includes("503") ||
+        err.message.includes("Service Unavailable") ||
+        err.message.includes("high demand")
+      );
+      if (isUnavailable) {
+        console.warn(`[Gemini] Model ${modelName} unavailable, attempting fallback...`);
+        continue;
+      }
+      break;
     }
-    throw err;
   }
+  
+  const err = lastError;
+  if (err && err.message && (err.message.includes("CONSUMER_SUSPENDED") || err.message.includes("403 Forbidden"))) {
+    console.warn("[Gemini] API Key or project suspended by Google AI Studio (CONSUMER_SUSPENDED). Falling back to Groq...");
+  } else if (err) {
+    console.error("[Gemini] Resume parsing failed:", err.message);
+  }
+  if (err) throw err;
 }
 
 /**
@@ -127,43 +149,60 @@ async function parseResumeWithGemini(filePath) {
  * @returns {Promise<string>} Transcribed speech text
  */
 async function transcribeAudioWithGemini(filePath, mimeType = "audio/webm") {
-  try {
-    const client = getClient();
-    const modelName = process.env.GEMINI_MODEL || "gemini-2.0-flash";
-    const model = client.getGenerativeModel({ model: modelName });
+  const client = getClient();
 
-    // Clean mimeType by removing parameters like ';codecs=opus'
-    let cleanMimeType = (mimeType || "").split(";")[0].trim().toLowerCase();
-    if (!cleanMimeType || cleanMimeType === "application/octet-stream") {
-      const ext = path.extname(filePath).toLowerCase();
-      if (ext === ".wav") cleanMimeType = "audio/wav";
-      else if (ext === ".mp3") cleanMimeType = "audio/mp3";
-      else if (ext === ".ogg") cleanMimeType = "audio/ogg";
-      else cleanMimeType = "audio/webm";
-    }
-
-    const fileData = fs.readFileSync(filePath);
-    const base64Data = fileData.toString("base64");
-
-    const result = await model.generateContent([
-      {
-        inlineData: {
-          mimeType: cleanMimeType,
-          data: base64Data,
-        },
-      },
-      {
-        text: "Generate an accurate transcription of the spoken audio. Output ONLY the plain text transcription, with no additional commentary, conversational remarks, or markdown formatting. If the audio is silent or contains no discernible speech, return an empty string.",
-      },
-    ]);
-
-    const transcript = result.response.text().trim();
-    console.log(`[Gemini STT] Transcription completed (${transcript.length} chars)`);
-    return transcript;
-  } catch (err) {
-    console.error("[Gemini STT] Transcription failed:", err.message);
-    throw err;
+  // Clean mimeType by removing parameters like ';codecs=opus'
+  let cleanMimeType = (mimeType || "").split(";")[0].trim().toLowerCase();
+  if (!cleanMimeType || cleanMimeType === "application/octet-stream") {
+    const ext = path.extname(filePath).toLowerCase();
+    if (ext === ".wav") cleanMimeType = "audio/wav";
+    else if (ext === ".mp3") cleanMimeType = "audio/mp3";
+    else if (ext === ".ogg") cleanMimeType = "audio/ogg";
+    else cleanMimeType = "audio/webm";
   }
+
+  const fileData = fs.readFileSync(filePath);
+  const base64Data = fileData.toString("base64");
+
+  let lastError = null;
+  for (const modelName of CANDIDATE_MODELS) {
+    try {
+      const model = client.getGenerativeModel({ model: modelName });
+      const result = await model.generateContent([
+        {
+          inlineData: {
+            mimeType: cleanMimeType,
+            data: base64Data,
+          },
+        },
+        {
+          text: "Generate an accurate transcription of the spoken audio. Output ONLY the plain text transcription, with no additional commentary, conversational remarks, or markdown formatting. If the audio is silent or contains no discernible speech, return an empty string.",
+        },
+      ]);
+
+      const transcript = result.response.text().trim();
+      console.log(`[Gemini STT] Transcription completed using ${modelName} (${transcript.length} chars)`);
+      return transcript;
+    } catch (err) {
+      lastError = err;
+      const isUnavailable = err.message && (
+        err.message.includes("404") ||
+        err.message.includes("not found") ||
+        err.message.includes("no longer available") ||
+        err.message.includes("503") ||
+        err.message.includes("Service Unavailable") ||
+        err.message.includes("high demand")
+      );
+      if (isUnavailable) {
+        console.warn(`[Gemini STT] Model ${modelName} unavailable, attempting fallback...`);
+        continue;
+      }
+      break;
+    }
+  }
+
+  console.error("[Gemini STT] Transcription failed across candidate models:", lastError?.message);
+  throw lastError;
 }
 
 module.exports = { parseResumeWithGemini, transcribeAudioWithGemini };

@@ -304,24 +304,14 @@ ${ragContext}`;
  * @param {string} difficulty - Session difficulty level (easy, medium, hard)
  * @returns {Promise<Object>} Graded results containing score, suggestions, and word counts
  */
-async function evaluateAnswer(question, answer, topic, targetRole, difficulty = "medium") {
-  if (!answer || answer.trim().length < 10) {
-    return { score: 0, feedback: "No substantive answer provided.", fillerWords: [] };
+async function evaluateAnswer(question, answer, topic, targetRole, difficulty = "medium", answerWpm = null) {
+  const words = (answer || "").trim().split(/\s+/).filter(Boolean).length;
+  if (!answer || words < 3) {
+    return { score: 0, feedback: "No substantive answer provided.", estimatedWpm: answerWpm || 0, wordCount: words };
   }
 
-  const FILLERS = ["um", "uh", "like", "basically", "literally", "you know", "sort of", "kind of", "right", "so"];
-  const lowerAnswer = answer.toLowerCase();
-  const fillerCounts = {};
-  for (const f of FILLERS) {
-    const regex = new RegExp(`\\b${f}\\b`, "gi");
-    const matches = lowerAnswer.match(regex);
-    if (matches) fillerCounts[f] = matches.length;
-  }
-  const totalFillers = Object.values(fillerCounts).reduce((a, b) => a + b, 0);
-
-  const words = answer.trim().split(/\s+/).length;
-  // Estimate WPM assuming avg ~2 min answer
-  const estimatedWpm = Math.round(words / 2);
+  // Use passed answerWpm or default to standard pace
+  const estimatedWpm = Number(answerWpm) > 0 ? Math.round(Number(answerWpm)) : 135;
 
   const diffStr = String(difficulty || "medium").toUpperCase();
 
@@ -356,14 +346,12 @@ Return ONLY valid JSON:
       feedback: parsed.feedback,
       strengths: parsed.strengths || [],
       gaps: parsed.gaps || [],
-      fillerWords: fillerCounts,
-      fillerCount: totalFillers,
       wordCount: words,
       estimatedWpm,
     };
   } catch (err) {
     console.error("[Groq] Evaluation failed:", err.message);
-    return { score: 50, feedback: "Answer received.", fillerWords: fillerCounts, fillerCount: totalFillers, wordCount: words, estimatedWpm };
+    return { score: 50, feedback: "Answer received.", wordCount: words, estimatedWpm };
   }
 }
 

@@ -20,6 +20,12 @@ export function useMicrophone({ onAudioChunk, mediaStream = null }) {
   const contextRef = useRef(null);
   const processorRef = useRef(null);
   const ownsStreamRef = useRef(false);
+  const activeRef = useRef(false);
+  const onAudioChunkRef = useRef(onAudioChunk);
+
+  useEffect(() => {
+    onAudioChunkRef.current = onAudioChunk;
+  }, [onAudioChunk]);
 
   /**
    * Initializes browser microphone media devices, AudioContext,
@@ -51,6 +57,11 @@ export function useMicrophone({ onAudioChunk, mediaStream = null }) {
         return;
       }
 
+      // Explicitly enable hardware audio tracks
+      audioTracks.forEach((t) => {
+        t.enabled = true;
+      });
+
       // Initialize Web Audio Context at 16kHz
       const ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
       contextRef.current = ctx;
@@ -66,6 +77,7 @@ export function useMicrophone({ onAudioChunk, mediaStream = null }) {
       const processor = ctx.createScriptProcessor(bufferSize, 1, 1);
 
       processor.onaudioprocess = (e) => {
+        if (!activeRef.current) return;
         // Extract mono channel Float32 representation
         const inputData = e.inputBuffer.getChannelData(0);
         const int16 = new Int16Array(inputData.length);
@@ -76,31 +88,46 @@ export function useMicrophone({ onAudioChunk, mediaStream = null }) {
           int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
         }
         // Dispatch raw ArrayBuffer to upstream parent callback (WebSocket)
-        onAudioChunk(int16.buffer);
+        onAudioChunkRef.current?.(int16.buffer);
       };
 
       source.connect(processor);
       processor.connect(ctx.destination);
       processorRef.current = processor;
       
+      activeRef.current = true;
       setActive(true);
       setError(null);
     } catch (err) {
       setError(err.message);
       console.error("[Mic] Failed to start:", err);
     }
-  }, [onAudioChunk, mediaStream]);
+  }, [mediaStream]);
 
   /**
    * Releases hardware channels, closes AudioContext, and destroys stream tracks.
    */
   const stop = useCallback(() => {
-    processorRef.current?.disconnect();
-    contextRef.current?.close();
+    activeRef.current = false;
+    try {
+      processorRef.current?.disconnect();
+    } catch (_) {}
+    if (contextRef.current && contextRef.current.state !== 'closed') {
+      try {
+        contextRef.current.close();
+      } catch (_) {}
+    }
+    contextRef.current = null;
+    processorRef.current = null;
     
-    // Stop recording tracks only if this hook instance owns the stream lifecycle
-    if (ownsStreamRef.current) {
-      streamRef.current?.getTracks().forEach((t) => t.stop());
+    // Explicitly mute audio tracks
+    if (streamRef.current) {
+      streamRef.current.getAudioTracks().forEach((t) => {
+        t.enabled = false;
+        if (ownsStreamRef.current) {
+          t.stop();
+        }
+      });
     }
     streamRef.current = null;
     ownsStreamRef.current = false;
