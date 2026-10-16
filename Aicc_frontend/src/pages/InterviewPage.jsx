@@ -513,8 +513,11 @@ export default function InterviewPage() {
    * @returns {Object} Target classification parameter
    */
   const getDominantEmotion = () => {
-    const highest = Object.keys(latestEmotion).reduce((a, b) => latestEmotion[a] > latestEmotion[b] ? a : b);
-    return { name: highest, value: latestEmotion[highest] };
+    if (!latestEmotion || typeof latestEmotion !== "object") return { name: "neutral", value: 1 };
+    const keys = Object.keys(latestEmotion);
+    if (keys.length === 0) return { name: "neutral", value: 1 };
+    const highest = keys.reduce((a, b) => ((latestEmotion[a] ?? 0) > (latestEmotion[b] ?? 0) ? a : b), keys[0]);
+    return { name: highest, value: latestEmotion[highest] ?? 0 };
   };
   const domE = getDominantEmotion();
 

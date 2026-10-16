@@ -1,6 +1,7 @@
 import React, { useEffect } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { useAuthStore } from "./stores/authStore";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import LandingPage from "./pages/LandingPage";
 import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
@@ -22,7 +23,8 @@ export default function App() {
   useEffect(() => { init(); }, [init]);
 
   return (
-    <Routes>
+    <ErrorBoundary>
+      <Routes>
       <Route path="/" element={<LandingPage />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/register" element={<RegisterPage />} />
@@ -32,6 +34,7 @@ export default function App() {
       <Route path="/report/:sessionId" element={<PrivateRoute><ReportPage /></PrivateRoute>} />
       <Route path="/admin" element={<PrivateRoute><AdminPage /></PrivateRoute>} />
       <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+      </Routes>
+    </ErrorBoundary>
   );
 }

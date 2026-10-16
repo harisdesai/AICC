@@ -74,14 +74,20 @@ Required schema:
 }
 `;
 
-const CANDIDATE_MODELS = [
-  process.env.GEMINI_MODEL,
-  "gemini-3.7-flash",
-  "gemini-3.8-flash",
-  "gemini-flash-latest",
-  "gemini-3.6-flash",
-  "gemini-3.5-flash",
-].filter(Boolean);
+const CANDIDATE_MODELS = Array.from(
+  new Set(
+    [
+      process.env.GEMINI_MODEL,
+      "gemini-flash-latest",
+      "gemini-3.5-flash",
+      "gemini-3.5-flash-lite",
+      "gemini-3.8-flash",
+      "gemini-3.6-flash",
+      "gemini-3.7-flash",
+      "gemini-pro-latest",
+    ].filter(Boolean)
+  )
+);
 
 /**
  * Reads a PDF file, submits it along with a parsing schema to Gemini, and returns parsed JSON.
@@ -120,12 +126,18 @@ async function parseResumeWithGemini(filePath) {
         err.message.includes("404") ||
         err.message.includes("not found") ||
         err.message.includes("no longer available") ||
+        err.message.includes("500") ||
+        err.message.includes("502") ||
         err.message.includes("503") ||
+        err.message.includes("504") ||
+        err.message.includes("429") ||
+        err.message.includes("Resource Exhausted") ||
         err.message.includes("Service Unavailable") ||
-        err.message.includes("high demand")
+        err.message.includes("high demand") ||
+        err.message.includes("quota")
       );
       if (isUnavailable) {
-        console.warn(`[Gemini] Model ${modelName} unavailable, attempting fallback...`);
+        console.warn(`[Gemini] Model ${modelName} unavailable (${err.message.slice(0, 80)}), attempting fallback...`);
         continue;
       }
       break;
@@ -189,12 +201,18 @@ async function transcribeAudioWithGemini(filePath, mimeType = "audio/webm") {
         err.message.includes("404") ||
         err.message.includes("not found") ||
         err.message.includes("no longer available") ||
+        err.message.includes("500") ||
+        err.message.includes("502") ||
         err.message.includes("503") ||
+        err.message.includes("504") ||
+        err.message.includes("429") ||
+        err.message.includes("Resource Exhausted") ||
         err.message.includes("Service Unavailable") ||
-        err.message.includes("high demand")
+        err.message.includes("high demand") ||
+        err.message.includes("quota")
       );
       if (isUnavailable) {
-        console.warn(`[Gemini STT] Model ${modelName} unavailable, attempting fallback...`);
+        console.warn(`[Gemini STT] Model ${modelName} unavailable (${err.message.slice(0, 80)}), attempting fallback...`);
         continue;
       }
       break;

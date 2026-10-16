@@ -11,7 +11,12 @@
  */
 
 const fs = require("fs");
-const pdfParse = require("pdf-parse");
+let pdfParse = null;
+try {
+  pdfParse = require("pdf-parse");
+} catch (err) {
+  console.warn("[ParserFallback] Warning: pdf-parse could not be loaded directly:", err.message);
+}
 const { createGroqChatCompletion, safeParseJson } = require("./groq");
 
 /**
@@ -24,13 +29,18 @@ async function parseResumeWithGroq(filePath) {
   const fileBuffer = fs.readFileSync(filePath);
   
   let rawText = "";
-  try {
-    // Tier 1: Try reading via standard PDF libraries
-    const data = await pdfParse(fileBuffer);
-    rawText = data.text || "";
-  } catch (pdfErr) {
-    console.warn("[ParserFallback] pdf-parse failed:", pdfErr.message);
-    
+  if (typeof pdfParse === "function") {
+    try {
+      // Tier 1: Try reading via standard PDF libraries
+      const data = await pdfParse(fileBuffer);
+      rawText = data.text || "";
+    } catch (pdfErr) {
+      console.warn("[ParserFallback] pdf-parse failed:", pdfErr.message);
+    }
+  }
+
+  // If Tier 1 failed or returned empty text, fall back to Tier 2 & Tier 3
+  if (!rawText.trim()) {
     // Check if it is a plain text file (does not start with %PDF- header)
     const fileHeader = fileBuffer.toString("utf8", 0, 5);
     if (fileHeader !== "%PDF-") {
@@ -39,7 +49,7 @@ async function parseResumeWithGroq(filePath) {
       rawText = fileBuffer.toString("utf8");
     } else {
       // Tier 3: Parse printable ASCII strings from corrupt PDF files
-      console.log("[ParserFallback] File is a corrupted PDF. Attempting strings-extraction fallback...");
+      console.log("[ParserFallback] PDF binary stream text extraction fallback...");
       const asciiStrings = [];
       const regex = /[\x20-\x7E\s]{4,}/g; // Printable ASCII strings of length 4+
       let match;

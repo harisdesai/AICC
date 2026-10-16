@@ -253,7 +253,7 @@ app.post("/api/resume", authenticate, upload.single("resume"), async (req, res, 
     let parsed;
     let geminiErr = null;
     try {
-      // Primary parser: Gemini 2.0 Flash
+      // Primary parser: Gemini Flash
       parsed = await parseResumeWithGemini(req.file.path);
     } catch (gErr) {
       console.warn("[Server] Gemini parsing failed, trying Groq fallback...", gErr.message);
@@ -269,9 +269,9 @@ app.post("/api/resume", authenticate, upload.single("resume"), async (req, res, 
           `Resume parsing failed. Gemini Error: ${gErr.message}. Groq Fallback Error: ${grErr.message}`
         );
       }
+    } finally {
+      try { if (req.file?.path) fs.unlinkSync(req.file.path); } catch (_) { /* ignore */ }
     }
-
-    try { fs.unlinkSync(req.file.path); } catch (_) { /* ignore */ }
 
     // --- Realtime Resume Evaluation ---
     // Perform technical quality audit on parsed resume details
@@ -357,12 +357,10 @@ app.post("/api/sessions", authenticate, async (req, res, next) => {
     
     if (githubUrl) {
       await query("UPDATE users SET github_url = $1 WHERE id = $2", [githubUrl, req.user.id]);
-      try {
-        // Index public repository text files into vector collections asynchronously
-        await indexGithubRepos(req.user.id, githubUrl);
-      } catch (e) {
-        console.warn("[RAG] Indexing failed:", e.message);
-      }
+      // Index public repository text files into vector collections asynchronously without blocking response
+      indexGithubRepos(req.user.id, githubUrl).catch((e) => {
+        console.warn("[RAG] Background indexing failed:", e.message);
+      });
     }
     const id = uuidv4();
     await query(
